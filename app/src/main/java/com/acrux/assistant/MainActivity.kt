@@ -37,8 +37,14 @@ import java.util.Locale
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        private const val WORKER_URL =
-            "https://acrux.axasta89.workers.dev"
+        // Replace this placeholder with your NEW Gemini API key.
+        private const val GEMINI_API_KEY =
+            "AQ.Ab8RN6I68LgMtk-DvC7Eur2_k6ZkQD1Ae77WDvI8hEn1LdYECw"
+
+        private const val GEMINI_MODEL = "gemini-3.8-flash"
+
+        private const val GEMINI_URL =
+            "https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent"
     }
 
     private lateinit var statusText: TextView
@@ -57,9 +63,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             if (granted) {
                 launchVoiceInput()
             } else {
-                showResponse(
-                    "Microphone permission is required for voice input."
-                )
+                showResponse("Microphone permission is required.")
             }
         }
 
@@ -129,7 +133,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         responseText = TextView(this).apply {
-            text = "Welcome, Sir ASTA.\n\nACRUX core is online.\n\nAsk me anything."
+            text = "Welcome, Sir ASTA.\n\nACRUX Gemini AI is ready.\n\nAsk me anything."
             textSize = 16f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -208,9 +212,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         if (standby && command != "arise") {
-            showResponse(
-                "ACRUX is in standby. Say ARISE to resume."
-            )
+            showResponse("ACRUX is in standby. Say ARISE to resume.")
             return
         }
 
@@ -248,16 +250,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             command.contains("date") || command.contains("day") ->
                 "Today is " +
                     LocalDateTime.now().format(
-                        DateTimeFormatter.ofPattern(
-                            "EEEE, dd MMMM yyyy"
-                        )
+                        DateTimeFormatter.ofPattern("EEEE, dd MMMM yyyy")
                     )
 
             command.contains("status") ->
-                "ACRUX basic systems are online."
+                "All basic ACRUX systems are online."
 
             command == "help" ->
-                "Ask me anything. You can also say FREEZE, ARISE or STOP."
+                "Ask me anything. Say FREEZE for standby, ARISE to resume, or STOP to stop voice output."
 
             else -> null
         }
@@ -277,8 +277,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        if (
+            GEMINI_API_KEY == "PASTE_NEW_GEMINI_API_KEY_HERE" ||
+            GEMINI_API_KEY.isBlank()
+        ) {
+            showResponse("Gemini API key has not been added yet.")
+            return
+        }
+
         requestInProgress = true
-        statusText.text = "● THINKING..."
+        statusText.text = "● CONNECTING TO GEMINI..."
         showResponse("ACRUX is thinking...")
 
         lifecycleScope.launch {
@@ -287,7 +295,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     requestGemini(prompt)
                 }
             } catch (error: Exception) {
-                "Connection error: " +
+                "Gemini connection error: " +
                     (error.message ?: "Please try again.")
             }
 
@@ -299,13 +307,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun requestGemini(prompt: String): String {
-        val connection = URL(WORKER_URL)
-            .openConnection() as HttpURLConnection
+        val connection =
+            URL(GEMINI_URL).openConnection() as HttpURLConnection
 
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 20000
-            connection.readTimeout = 40000
+            connection.readTimeout = 45000
             connection.doOutput = true
 
             connection.setRequestProperty(
@@ -314,49 +322,103 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             )
 
             connection.setRequestProperty(
-                "Accept",
-                "application/json"
+                "x-goog-api-key",
+                GEMINI_API_KEY
             )
 
             val requestBody = JSONObject()
-                .put("prompt", prompt)
+                .put(
+                    "systemInstruction",
+                    JSONObject().put(
+                        "parts",
+                        org.json.JSONArray().put(
+                            JSONObject().put(
+                                "text",
+                                "You are ACRUX, a helpful personal AI assistant. " +
+                                    "Address the user as Sir ASTA. " +
+                                    "Understand English, Hindi and Hinglish. " +
+                                    "Be friendly, clear, truthful and concise."
+                            )
+                        )
+                    )
+                )
+                .put(
+                    "contents",
+                    org.json.JSONArray().put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put(
+                                "parts",
+                                org.json.JSONArray().put(
+                                    JSONObject().put("text", prompt)
+                                )
+                            )
+                    )
+                )
+                .put(
+                    "generationConfig",
+                    JSONObject().put("maxOutputTokens", 800)
+                )
                 .toString()
 
             connection.outputStream.use { output ->
-                output.write(requestBody.toByteArray(Charsets.UTF_8))
+                output.write(
+                    requestBody.toByteArray(Charsets.UTF_8)
+                )
             }
 
             val responseCode = connection.responseCode
 
-            val responseStream = if (responseCode in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream
-            }
+            val responseStream =
+                if (responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
 
             val responseBody = responseStream
                 ?.bufferedReader(Charsets.UTF_8)
                 ?.use { it.readText() }
-                ?: throw IOException("Empty server response.")
+                ?: throw IOException("Empty response from Gemini.")
 
             val json = JSONObject(responseBody)
 
             if (responseCode !in 200..299) {
-                val details = json.optString(
-                    "details",
-                    json.optString("error", "Unknown server error.")
-                )
+                val message = json.optJSONObject("error")
+                    ?.optString("message")
+                    ?: "Gemini request failed. HTTP $responseCode"
 
-                throw IOException(details)
+                throw IOException(message)
             }
 
-            val reply = json.optString("reply", "").trim()
+            val candidates = json.optJSONArray("candidates")
+                ?: throw IOException("Gemini returned no candidates.")
 
-            if (reply.isEmpty()) {
-                throw IOException("Gemini returned an empty response.")
+            val firstCandidate = candidates.optJSONObject(0)
+                ?: throw IOException("Gemini returned an empty candidate.")
+
+            val content = firstCandidate.optJSONObject("content")
+                ?: throw IOException("Gemini response content is missing.")
+
+            val parts = content.optJSONArray("parts")
+                ?: throw IOException("Gemini response parts are missing.")
+
+            val reply = StringBuilder()
+
+            for (i in 0 until parts.length()) {
+                val part = parts.optJSONObject(i)
+                if (part != null) {
+                    reply.append(part.optString("text", ""))
+                }
             }
 
-            return reply
+            val finalReply = reply.toString().trim()
+
+            if (finalReply.isEmpty()) {
+                throw IOException("Gemini returned an empty text response.")
+            }
+
+            return finalReply
 
         } finally {
             connection.disconnect()
@@ -372,9 +434,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         ) {
             launchVoiceInput()
         } else {
-            permissionLauncher.launch(
-                Manifest.permission.RECORD_AUDIO
-            )
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -399,9 +459,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         try {
             voiceLauncher.launch(intent)
         } catch (_: ActivityNotFoundException) {
-            showResponse(
-                "No speech recognition service is available."
-            )
+            showResponse("No speech recognition service is available.")
         }
     }
 
@@ -436,9 +494,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             textSize = 14f
             setTextColor(Color.WHITE)
             isAllCaps = false
-            background = roundedBackground(
-                Color.rgb(0, 115, 160)
-            )
+            background = roundedBackground(Color.rgb(0, 115, 160))
         }
     }
 
@@ -470,9 +526,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density
-        ).toInt()
+        return (value * resources.displayMetrics.density).toInt()
     }
 
     override fun onDestroy() {
