@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         sendButton.setOnClickListener {
             val command = inputField.text.toString().trim()
+
             if (command.isNotEmpty()) {
                 processCommand(command)
                 inputField.text.clear()
@@ -165,7 +166,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun processCommand(rawCommand: String) {
-        val command = rawCommand.trim().lowercase(Locale.ROOT)
+        val command = rawCommand
+            .trim()
+            .lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9 ]"), "")
+            .replace(Regex("\\s+"), " ")
 
         if (command == "stop") {
             tts?.stop()
@@ -188,12 +193,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (command == "arise") {
             standby = false
             statusText.text = "● SYSTEM ONLINE"
-            speak("I am online, Sir ASTA.")
+            val reply = "I am online, Sir ASTA."
+            showResponse(reply)
+            speak(reply)
             return
         }
 
+        val greetings = setOf(
+            "hi", "hii", "hiii", "hiiii",
+            "hello", "helloo", "hellooo",
+            "hlo", "hloo", "hlooo",
+            "hey", "heyy", "heyyy",
+            "good morning", "good afternoon",
+            "good evening"
+        )
+
         val reply = when {
-            command.contains("hello") || command == "hi" ->
+            command in greetings ->
                 "Hello, Sir ASTA. How can I assist you?"
 
             command.contains("your name") ->
@@ -214,7 +230,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             command.contains("status") ->
                 "All basic ACRUX systems are online."
 
-            command.contains("help") ->
+            command == "help" ->
                 "You can ask for the time, date, my name, or system status. Say FREEZE for standby and ARISE to resume."
 
             else ->
@@ -272,6 +288,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             val result = tts?.setLanguage(Locale.getDefault())
+
             ttsReady = result != TextToSpeech.LANG_MISSING_DATA &&
                 result != TextToSpeech.LANG_NOT_SUPPORTED
         }
@@ -294,6 +311,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         return GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(16).toFloat()
+
             if (strokeColor != null) {
                 setStroke(dp(1), strokeColor)
             }
