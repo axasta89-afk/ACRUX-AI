@@ -22,18 +22,23 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        // APNI GEMINI API KEY YAHAN PASTE KARO
-        private const val GEMINI_API_KEY = "PASTE_YOUR_NEW_API_KEY_HERE"
-
-        private const val GEMINI_MODEL = "gemini-3.8-flash"
+        private const val WORKER_URL =
+            "https://acrux.axasta89.workers.dev"
     }
 
     private lateinit var statusText: TextView
@@ -43,6 +48,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var standby = false
+    private var requestInProgress = false
 
     private val permissionLauncher =
         registerForActivityResult(
@@ -51,7 +57,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             if (granted) {
                 launchVoiceInput()
             } else {
-                showResponse("Microphone permission is required.")
+                showResponse(
+                    "Microphone permission is required for voice input."
+                )
             }
         }
 
@@ -80,12 +88,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         window.navigationBarColor = Color.rgb(5, 12, 25)
 
         tts = TextToSpeech(this, this)
-
         createDashboard()
     }
 
     private fun createDashboard() {
-
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -123,7 +129,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         responseText = TextView(this).apply {
-            text = "Welcome, Sir ASTA.\n\nACRUX Gemini AI is ready.\n\nAsk me anything."
+            text = "Welcome, Sir ASTA.\n\nACRUX core is online.\n\nAsk me anything."
             textSize = 16f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -182,7 +188,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun processCommand(rawCommand: String) {
-
         val command = rawCommand
             .trim()
             .lowercase(Locale.ROOT)
@@ -203,7 +208,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         if (standby && command != "arise") {
-            showResponse("ACRUX is in standby. Say ARISE to resume.")
+            showResponse(
+                "ACRUX is in standby. Say ARISE to resume."
+            )
             return
         }
 
@@ -225,233 +232,140 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             "good evening"
         )
 
-        when {
-            command in greetings -> {
-                val reply = "Hello, Sir ASTA. How can I assist you?"
-                showResponse(reply)
-                speak(reply)
-            }
+        val localReply: String? = when {
+            command in greetings ->
+                "Hello, Sir ASTA. How can I assist you?"
 
-            command.contains("your name") -> {
-                val reply = "I am ACRUX, your personal AI assistant."
-                showResponse(reply)
-                speak(reply)
-            }
+            command.contains("your name") ->
+                "I am ACRUX, your personal AI assistant."
 
-            command.contains("time") -> {
-                val reply = "The current time is " +
-                    java.text.SimpleDateFormat(
-                        "hh:mm a",
-                        Locale.getDefault()
-                    ).format(java.util.Date())
+            command.contains("time") ->
+                "The current time is " +
+                    LocalDateTime.now().format(
+                        DateTimeFormatter.ofPattern("hh:mm a")
+                    )
 
-                showResponse(reply)
-                speak(reply)
-            }
+            command.contains("date") || command.contains("day") ->
+                "Today is " +
+                    LocalDateTime.now().format(
+                        DateTimeFormatter.ofPattern(
+                            "EEEE, dd MMMM yyyy"
+                        )
+                    )
 
-            command.contains("date") || command.contains("day") -> {
-                val reply = "Today is " +
-                    java.text.SimpleDateFormat(
-                        "EEEE, dd MMMM yyyy",
-                        Locale.getDefault()
-                    ).format(java.util.Date())
+            command.contains("status") ->
+                "ACRUX basic systems are online."
 
-                showResponse(reply)
-                speak(reply)
-            }
+            command == "help" ->
+                "Ask me anything. You can also say FREEZE, ARISE or STOP."
 
-            command.contains("status") -> {
-                val reply = "ACRUX basic systems are online."
-                showResponse(reply)
-                speak(reply)
-            }
-
-            command == "help" -> {
-                val reply = "Ask me anything. Gemini AI is connected for general questions. Say FREEZE for standby and ARISE to resume."
-                showResponse(reply)
-                speak(reply)
-            }
-
-            else -> {
-                askGemini(rawCommand)
-            }
+            else -> null
         }
-    }
 
-    private fun askGemini(prompt: String) {
-
-        if (GEMINI_API_KEY == "PASTE_YOUR_NEW_API_KEY_HERE" ||
-            GEMINI_API_KEY.isBlank()
-        ) {
-            showResponse("Please add your Gemini API key in MainActivity.kt.")
+        if (localReply != null) {
+            showResponse(localReply)
+            speak(localReply)
             return
         }
 
-        statusText.text = "● GEMINI AI THINKING..."
-        showResponse("ACRUX is thinking, Sir ASTA...")
+        askGemini(rawCommand.trim())
+    }
 
-        Thread {
+    private fun askGemini(prompt: String) {
+        if (requestInProgress) {
+            showResponse("Please wait. ACRUX is processing your previous request.")
+            return
+        }
 
-            var connection: HttpURLConnection? = null
+        requestInProgress = true
+        statusText.text = "● THINKING..."
+        showResponse("ACRUX is thinking...")
 
-            try {
-                val url = URL(
-                    "https://generativelanguage.googleapis.com/v1beta/models/" +
-                        GEMINI_MODEL + ":generateContent"
-                )
-
-                connection = url.openConnection() as HttpURLConnection
-
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 20000
-                connection.readTimeout = 30000
-                connection.doOutput = true
-
-                connection.setRequestProperty(
-                    "Content-Type",
-                    "application/json"
-                )
-
-                connection.setRequestProperty(
-                    "x-goog-api-key",
-                    GEMINI_API_KEY
-                )
-
-                val requestBody = JSONObject().apply {
-
-                    put(
-                        "system_instruction",
-                        JSONObject().put(
-                            "parts",
-                            org.json.JSONArray().put(
-                                JSONObject().put(
-                                    "text",
-                                    "You are ACRUX, a helpful personal AI assistant. " +
-                                        "Address the user as Sir ASTA. " +
-                                        "Be friendly, clear, concise and truthful. " +
-                                        "You can answer questions but cannot directly " +
-                                        "control phone features unless the app provides " +
-                                        "that functionality."
-                                )
-                            )
-                        )
-                    )
-
-                    put(
-                        "contents",
-                        org.json.JSONArray().put(
-                            JSONObject().apply {
-                                put("role", "user")
-                                put(
-                                    "parts",
-                                    org.json.JSONArray().put(
-                                        JSONObject().put("text", prompt)
-                                    )
-                                )
-                            }
-                        )
-                    )
-
-                    put(
-                        "generationConfig",
-                        JSONObject().apply {
-                            put("temperature", 0.7)
-                            put("maxOutputTokens", 800)
-                        }
-                    )
+        lifecycleScope.launch {
+            val reply = try {
+                withContext(Dispatchers.IO) {
+                    requestGemini(prompt)
                 }
-
-                connection.outputStream.use { output ->
-                    output.write(
-                        requestBody.toString().toByteArray(Charsets.UTF_8)
-                    )
-                }
-
-                val responseCode = connection.responseCode
-
-                val responseStream =
-                    if (responseCode in 200..299) {
-                        connection.inputStream
-                    } else {
-                        connection.errorStream
-                    }
-
-                val responseBody = responseStream
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
-                    ?: ""
-
-                if (responseCode !in 200..299) {
-                    val errorMessage = try {
-                        JSONObject(responseBody)
-                            .optJSONObject("error")
-                            ?.optString("message")
-                            ?: "API request failed. Code: $responseCode"
-                    } catch (_: Exception) {
-                        "API request failed. Code: $responseCode"
-                    }
-
-                    throw Exception(errorMessage)
-                }
-
-                val json = JSONObject(responseBody)
-
-                val candidates = json.optJSONArray("candidates")
-                    ?: throw Exception("Gemini returned no answer.")
-
-                if (candidates.length() == 0) {
-                    throw Exception("Gemini returned an empty answer.")
-                }
-
-                val content = candidates
-                    .getJSONObject(0)
-                    .optJSONObject("content")
-                    ?: throw Exception("No response content received.")
-
-                val parts = content.optJSONArray("parts")
-                    ?: throw Exception("No response text received.")
-
-                val answerBuilder = StringBuilder()
-
-                for (i in 0 until parts.length()) {
-                    val part = parts.optJSONObject(i)
-                    answerBuilder.append(part?.optString("text", "") ?: "")
-                }
-
-                val answer = answerBuilder.toString().trim()
-
-                if (answer.isBlank()) {
-                    throw Exception("Gemini returned an empty answer.")
-                }
-
-                runOnUiThread {
-                    statusText.text = "● GEMINI AI ONLINE"
-                    showResponse(answer)
-                    speak(answer)
-                }
-
-            } catch (e: Exception) {
-
-                val errorMessage = e.message
-                    ?: "Unknown connection error."
-
-                runOnUiThread {
-                    statusText.text = "● AI CONNECTION ERROR"
-                    showResponse(
-                        "Sorry, Sir ASTA.\n\n$errorMessage"
-                    )
-                }
-
-            } finally {
-                connection?.disconnect()
+            } catch (error: Exception) {
+                "Connection error: " +
+                    (error.message ?: "Please try again.")
             }
 
-        }.start()
+            requestInProgress = false
+            statusText.text = "● SYSTEM ONLINE"
+            showResponse(reply)
+            speak(reply)
+        }
+    }
+
+    private fun requestGemini(prompt: String): String {
+        val connection = URL(WORKER_URL)
+            .openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 20000
+            connection.readTimeout = 40000
+            connection.doOutput = true
+
+            connection.setRequestProperty(
+                "Content-Type",
+                "application/json; charset=UTF-8"
+            )
+
+            connection.setRequestProperty(
+                "Accept",
+                "application/json"
+            )
+
+            val requestBody = JSONObject()
+                .put("prompt", prompt)
+                .toString()
+
+            connection.outputStream.use { output ->
+                output.write(requestBody.toByteArray(Charsets.UTF_8))
+            }
+
+            val responseCode = connection.responseCode
+
+            val responseStream = if (responseCode in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+
+            val responseBody = responseStream
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                ?: throw IOException("Empty server response.")
+
+            val json = JSONObject(responseBody)
+
+            if (responseCode !in 200..299) {
+                val details = json.optString(
+                    "details",
+                    json.optString("error", "Unknown server error.")
+                )
+
+                throw IOException(details)
+            }
+
+            val reply = json.optString("reply", "").trim()
+
+            if (reply.isEmpty()) {
+                throw IOException("Gemini returned an empty response.")
+            }
+
+            return reply
+
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun requestVoiceInput() {
-
-        if (ContextCompat.checkSelfPermission(
+        if (
+            ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
@@ -465,7 +379,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun launchVoiceInput() {
-
         val intent = Intent(
             RecognizerIntent.ACTION_RECOGNIZE_SPEECH
         ).apply {
@@ -508,9 +421,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     override fun onInit(status: Int) {
-
         if (status == TextToSpeech.SUCCESS) {
-
             val result = tts?.setLanguage(Locale.getDefault())
 
             ttsReady =
@@ -535,7 +446,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         color: Int,
         strokeColor: Int? = null
     ): GradientDrawable {
-
         return GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(16).toFloat()
@@ -550,7 +460,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         top: Int = 0,
         bottom: Int = 0
     ): LinearLayout.LayoutParams {
-
         return LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
