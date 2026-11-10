@@ -26,6 +26,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -37,14 +38,15 @@ import java.util.Locale
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        // Replace this placeholder with your NEW Gemini API key.
-        private const val GEMINI_API_KEY =
-            "AQ.Ab8RN6I68LgMtk-DvC7Eur2_k6ZkQD1Ae77WDvI8hEn1LdYECw"
+        // Paste your Groq API key between the quotation marks.
+        private const val GROQ_API_KEY =
+            "PASTE_YOUR_GROQ_API_KEY_HERE"
 
-        private const val GEMINI_MODEL = "gemini-3.8-flash"
+        private const val GROQ_MODEL =
+            "llama-3.3-70b-versatile"
 
-        private const val GEMINI_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent"
+        private const val GROQ_URL =
+            "https://api.groq.com/openai/v1/chat/completions"
     }
 
     private lateinit var statusText: TextView
@@ -133,7 +135,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         responseText = TextView(this).apply {
-            text = "Welcome, Sir ASTA.\n\nACRUX Gemini AI is ready.\n\nAsk me anything."
+            text = "Welcome, Sir ASTA.\n\nACRUX Groq AI is ready.\n\nAsk me anything."
             textSize = 16f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -268,34 +270,34 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        askGemini(rawCommand.trim())
+        askGroq(rawCommand.trim())
     }
 
-    private fun askGemini(prompt: String) {
+    private fun askGroq(prompt: String) {
         if (requestInProgress) {
             showResponse("Please wait. ACRUX is processing your previous request.")
             return
         }
 
         if (
-            GEMINI_API_KEY == "PASTE_NEW_GEMINI_API_KEY_HERE" ||
-            GEMINI_API_KEY.isBlank()
+            GROQ_API_KEY == "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" ||
+            GROQ_API_KEY.isBlank()
         ) {
-            showResponse("Gemini API key has not been added yet.")
+            showResponse("Groq API key has not been added yet.")
             return
         }
 
         requestInProgress = true
-        statusText.text = "● CONNECTING TO GEMINI..."
+        statusText.text = "● CONNECTING TO GROQ..."
         showResponse("ACRUX is thinking...")
 
         lifecycleScope.launch {
             val reply = try {
                 withContext(Dispatchers.IO) {
-                    requestGemini(prompt)
+                    requestGroq(prompt)
                 }
             } catch (error: Exception) {
-                "Gemini connection error: " +
+                "Groq connection error: " +
                     (error.message ?: "Please try again.")
             }
 
@@ -306,9 +308,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun requestGemini(prompt: String): String {
+    private fun requestGroq(prompt: String): String {
         val connection =
-            URL(GEMINI_URL).openConnection() as HttpURLConnection
+            URL(GROQ_URL).openConnection() as HttpURLConnection
 
         try {
             connection.requestMethod = "POST"
@@ -322,43 +324,32 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             )
 
             connection.setRequestProperty(
-                "x-goog-api-key",
-                GEMINI_API_KEY
+                "Authorization",
+                "Bearer $GROQ_API_KEY"
             )
 
-            val requestBody = JSONObject()
+            val messages = JSONArray()
                 .put(
-                    "systemInstruction",
-                    JSONObject().put(
-                        "parts",
-                        org.json.JSONArray().put(
-                            JSONObject().put(
-                                "text",
-                                "You are ACRUX, a helpful personal AI assistant. " +
-                                    "Address the user as Sir ASTA. " +
-                                    "Understand English, Hindi and Hinglish. " +
-                                    "Be friendly, clear, truthful and concise."
-                            )
+                    JSONObject()
+                        .put("role", "system")
+                        .put(
+                            "content",
+                            "You are ACRUX, a helpful personal AI assistant. " +
+                                "Address the user as Sir ASTA. " +
+                                "Understand English, Hindi and Hinglish. " +
+                                "Be friendly, clear, truthful and concise."
                         )
-                    )
                 )
                 .put(
-                    "contents",
-                    org.json.JSONArray().put(
-                        JSONObject()
-                            .put("role", "user")
-                            .put(
-                                "parts",
-                                org.json.JSONArray().put(
-                                    JSONObject().put("text", prompt)
-                                )
-                            )
-                    )
+                    JSONObject()
+                        .put("role", "user")
+                        .put("content", prompt)
                 )
-                .put(
-                    "generationConfig",
-                    JSONObject().put("maxOutputTokens", 800)
-                )
+
+            val requestBody = JSONObject()
+                .put("model", GROQ_MODEL)
+                .put("messages", messages)
+                .put("max_completion_tokens", 800)
                 .toString()
 
             connection.outputStream.use { output ->
@@ -379,43 +370,34 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             val responseBody = responseStream
                 ?.bufferedReader(Charsets.UTF_8)
                 ?.use { it.readText() }
-                ?: throw IOException("Empty response from Gemini.")
+                ?: throw IOException("Empty response from Groq.")
 
             val json = JSONObject(responseBody)
 
             if (responseCode !in 200..299) {
                 val message = json.optJSONObject("error")
                     ?.optString("message")
-                    ?: "Gemini request failed. HTTP $responseCode"
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Groq request failed. HTTP $responseCode"
 
                 throw IOException(message)
             }
 
-            val candidates = json.optJSONArray("candidates")
-                ?: throw IOException("Gemini returned no candidates.")
+            val choices = json.optJSONArray("choices")
+                ?: throw IOException("Groq returned no choices.")
 
-            val firstCandidate = candidates.optJSONObject(0)
-                ?: throw IOException("Gemini returned an empty candidate.")
+            val firstChoice = choices.optJSONObject(0)
+                ?: throw IOException("Groq returned an empty choice.")
 
-            val content = firstCandidate.optJSONObject("content")
-                ?: throw IOException("Gemini response content is missing.")
+            val message = firstChoice.optJSONObject("message")
+                ?: throw IOException("Groq response message is missing.")
 
-            val parts = content.optJSONArray("parts")
-                ?: throw IOException("Gemini response parts are missing.")
-
-            val reply = StringBuilder()
-
-            for (i in 0 until parts.length()) {
-                val part = parts.optJSONObject(i)
-                if (part != null) {
-                    reply.append(part.optString("text", ""))
-                }
-            }
-
-            val finalReply = reply.toString().trim()
+            val finalReply = message
+                .optString("content")
+                .trim()
 
             if (finalReply.isEmpty()) {
-                throw IOException("Gemini returned an empty text response.")
+                throw IOException("Groq returned an empty text response.")
             }
 
             return finalReply
