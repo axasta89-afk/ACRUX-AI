@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var statusText: TextView
     private lateinit var responseText: TextView
     private lateinit var inputField: EditText
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var standby = false
@@ -120,7 +121,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         inputField = EditText(this).apply {
             hint = "Type a command..."
             textSize = 16f
-            singleLine = true
+            setSingleLine(true)
             imeOptions = EditorInfo.IME_ACTION_SEND
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
