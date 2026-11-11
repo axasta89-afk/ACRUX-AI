@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     companion object {
         // Paste your Groq API key between the quotation marks.
         private const val GROQ_API_KEY =
-            "PASTE_YOUR_GROQ_API_KEY_HERE"
+            "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"
 
         private const val GROQ_MODEL =
             "llama-3.3-70b-versatile"
