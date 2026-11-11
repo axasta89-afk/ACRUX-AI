@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
@@ -37,7 +38,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
         private const val GROQ_API_KEY =
-            "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"
+            "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
 
         private const val GROQ_MODEL =
             "openai/gpt-oss-120b"
@@ -64,6 +65,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             } else {
                 showResponse("Microphone permission is required.")
             }
+        }
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) {
+            // Foreground service can still start if notification
+            // permission is denied, but its notification may not
+            // appear in the notification drawer.
+            startBackgroundService()
         }
 
     private val voiceLauncher =
@@ -156,6 +167,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         val sendButton = makeButton("SEND")
         val micButton = makeButton("🎙 VOICE INPUT")
+        val startButton = makeButton("▶ START BACKGROUND")
+        val stopButton = makeButton("■ STOP BACKGROUND")
 
         sendButton.setOnClickListener {
             val command = inputField.text.toString().trim()
@@ -168,6 +181,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         micButton.setOnClickListener {
             requestVoiceInput()
+        }
+
+        startButton.setOnClickListener {
+            requestBackgroundStart()
+        }
+
+        stopButton.setOnClickListener {
+            stopBackgroundService()
         }
 
         inputField.setOnEditorActionListener { _, actionId, _ ->
@@ -185,12 +206,30 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         root.addView(responseText, marginParams(bottom = 24))
         root.addView(inputField, marginParams(bottom = 12))
         root.addView(sendButton, marginParams(bottom = 12))
-        root.addView(micButton)
+        root.addView(micButton, marginParams(bottom = 24))
+        root.addView(startButton, marginParams(bottom = 12))
+        root.addView(stopButton)
 
         setContentView(scrollView)
     }
 
     private fun processCommand(rawCommand: String) {
+
+        val command = CommandEngine.normalize(rawCommand)
+
+        when (command) {
+            "start background",
+            "start background service" -> {
+                requestBackgroundStart()
+                return
+            }
+
+            "stop background",
+            "stop background service" -> {
+                stopBackgroundService()
+                return
+            }
+        }
 
         if (CommandEngine.isStop(rawCommand)) {
             tts?.stop()
@@ -231,6 +270,56 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         askGroq(rawCommand.trim())
     }
 
+    private fun requestBackgroundStart() {
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else {
+            startBackgroundService()
+        }
+    }
+
+    private fun startBackgroundService() {
+        try {
+            val serviceIntent =
+                AcruxBackgroundService.startIntent(this)
+
+            ContextCompat.startForegroundService(
+                this,
+                serviceIntent
+            )
+
+            showResponse(
+                "ACRUX background service start requested, Sir ASTA."
+            )
+        } catch (error: Exception) {
+            showResponse(
+                "Background service error: " +
+                    (error.message ?: "Unable to start service.")
+            )
+        }
+    }
+
+    private fun stopBackgroundService() {
+        val serviceIntent =
+            Intent(this, AcruxBackgroundService::class.java)
+
+        val stopped = stopService(serviceIntent)
+
+        if (stopped) {
+            showResponse("ACRUX background service stopped.")
+        } else {
+            showResponse("ACRUX background service is not running.")
+        }
+    }
+
     private fun askGroq(prompt: String) {
         if (requestInProgress) {
             showResponse(
@@ -240,10 +329,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         if (
-            GROQ_API_KEY == "PASTE_YOUR_GROQ_API_KEY_HERE" ||
+            GROQ_API_KEY == "PASTE_YOUR_NEW_GROQ_API_KEY_HERE" ||
             GROQ_API_KEY.isBlank()
         ) {
-            showResponse("Groq API key has not been added yet.")
+            showResponse("Add your new Groq API key in the local project.")
             return
         }
 
