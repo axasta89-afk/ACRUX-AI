@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
@@ -42,13 +43,12 @@ import java.util.Locale
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        // Replace this placeholder locally with your NEW Groq key.
-        // Never share the key in chat or publish it in a public repository.
+        // Add your NEW Groq API key locally.
+        // Never publish this key in a public repository.
         private const val GROQ_API_KEY =
-            "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"
+            "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
 
-        private const val GROQ_MODEL =
-            "openai/gpt-oss-120b"
+        private const val GROQ_MODEL = "openai/gpt-oss-120b"
 
         private const val GROQ_URL =
             "https://api.groq.com/openai/v1/chat/completions"
@@ -165,6 +165,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         registerVoiceReceiver()
         createDashboard()
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            val result = tts?.setLanguage(Locale.getDefault())
+
+            ttsReady =
+                result != TextToSpeech.LANG_MISSING_DATA &&
+                result != TextToSpeech.LANG_NOT_SUPPORTED
+        } else {
+            ttsReady = false
+        }
     }
 
     private fun registerVoiceReceiver() {
@@ -405,7 +417,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun requestBackgroundStart() {
-
         if (
             ContextCompat.checkSelfPermission(
                 this,
@@ -626,21 +637,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         ) {
             launchVoiceInput()
         } else {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            permissionLauncher.launch(
+                Manifest.permission.RECORD_AUDIO
+            )
         }
     }
 
     private fun launchVoiceInput() {
         val intent = Intent(
-            RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-        ).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE,
-                Locale.getDefault()
-            )
-            putExtra(
-                RecognizerInten
+            RecognizerIntent.ACTION
