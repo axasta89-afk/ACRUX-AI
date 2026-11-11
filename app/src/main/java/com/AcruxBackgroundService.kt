@@ -4,83 +4,66 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
-import android.os.SystemClock
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService as VoskSpeechService
+import org.vosk.android.RecognitionListener as VoskRecognitionListener
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
-import java.util.concurrent.Executors
 import java.util.zip.ZipInputStream
 
-class AcruxBackgroundService : Service() {
+class AcruxBackgroundService : Service(), VoskRecognitionListener {
 
     companion object {
-        const val ACTION_START =
-            "com.acrux.assistant.ACTION_START"
-        const val ACTION_STOP =
-            "com.acrux.assistant.ACTION_STOP"
-        const val ACTION_WAKE_WORD =
-            "com.acrux.assistant.ACTION_WAKE_WORD"
-        const val ACTION_COMMAND =
-            "com.acrux.assistant.ACTION_COMMAND"
-        const val ACTION_ERROR =
-            "com.acrux.assistant.ACTION_ERROR"
-        const val ACTION_DEBUG =
-            "com.acrux.assistant.ACTION_DEBUG"
+        const val ACTION_START = "com.acrux.assistant.ACTION_START"
+        const val ACTION_STOP = "com.acrux.assistant.ACTION_STOP"
+        const val ACTION_WAKE_WORD = "com.acrux.assistant.ACTION_WAKE_WORD"
+        const val ACTION_COMMAND = "com.acrux.assistant.ACTION_COMMAND"
+        const val ACTION_ERROR = "com.acrux.assistant.ACTION_ERROR"
+        const val ACTION_DEBUG = "com.acrux.assistant.ACTION_DEBUG"
 
-        const val EXTRA_COMMAND = "command"
-        const val EXTRA_ERROR = "error"
-        const val EXTRA_DEBUG = "debug"
-
-        private const val CHANNEL_ID =
-            "acrux_background_channel"
-
+        private const val CHANNEL_ID = "acrux_background_channel"
         private const val NOTIFICATION_ID = 1001
 
-        private const val MODEL_NAME =
-            "vosk-model-small-en-us-0.15"
-
+        private const val MODEL_NAME = "vosk-model-small-en-us-0.15"
         private const val MODEL_URL =
             "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
     }
 
-    private val executor =
-        Executors.newSingleThreadExecutor()
-
-    @Volatile
-    private var awaitingCommand = false
-
-    @Volatile
-    private var isStarting = false
-
-    @Volatile
-    private var isStopping = false
-
-    @Volatile
-    private var lastPartialDebugTime = 0L
+    private val handler = Handler(Looper.getMainLooper())
 
     private var model: Model? = null
     private var recognizer: Recognizer? = null
-    private var speechService: VoskSpeechService? = null
+    private var voskService: VoskSpeechService? = null
+    private var androidRecognizer: SpeechRecognizer? = null
+
+    @Volatile
+    private var serviceRunning = false
+
+    @Volatile
+    private var capturingCommand = false
+
+    private var modelLoading = false
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        sendDebug("SERVICE CREATED")
+        debug("ACRUX background service created")
     }
 
     override fun onStartCommand(
@@ -90,675 +73,487 @@ class AcruxBackgroundService : Service() {
     ): Int {
 
         when (intent?.action) {
-
-            ACTION_START -> {
-                sendDebug("START ACTION RECEIVED")
-
-                try {
-                    startForegroundNotification()
-                    sendDebug("FOREGROUND NOTIFICATION STARTED")
-                } catch (e: Exception) {
-                    sendDebug("FOREGROUND ERROR: ${e.message}")
-                    sendError(
-                        "Could not show foreground notification: ${e.message}"
-                    )
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-
-                val permissionGranted =
-                    ContextCompat.checkSelfPermission(
-                        this,
-                        android.Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-
-                sendDebug("MICROPHONE PERMISSION: $permissionGranted")
-
-                if (!permissionGranted) {
-                    sendError(
-                        "Microphone permission is not granted."
-                    )
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-
-                if (!isStarting && speechService == null) {
-                    isStarting = true
-                    isStopping = false
-
-                    executor.execute {
-                        try {
-                            sendDebug("BACKGROUND ENGINE STARTING")
-                            sendStatusNotification(
-                                "Preparing offline voice recognition..."
-                            )
-
-                            startVosk()
-
-                            if (speechService != null) {
-                                sendDebug(
-                                    "VOSK STARTUP FINISHED. Waiting for speech..."
-                                )
-                                sendStatusNotification(
-                                    "Recognition engine started. Say ACRUX."
-                                )
-                            } else if (!isStopping) {
-                                sendDebug(
-                                    "WARNING: Speech service is NULL after startup"
-                                )
-                            }
-
-                        } catch (e: Exception) {
-                            Log.e(
-                                "ACRUX",
-                                "Vosk startup error",
-                                e
-                            )
-
-                            sendDebug(
-                                "STARTUP ERROR: ${e.message}"
-                            )
-
-                            sendError(
-                                e.message
-                                    ?: "Could not start voice recognition."
-                            )
-
-                            stopSelf()
-
-                        } finally {
-                            isStarting = false
-                        }
-                    }
-                } else {
-                    sendDebug(
-                        "START IGNORED: Service already starting or running"
-                    )
-                }
-            }
-
             ACTION_STOP -> {
-                sendDebug("STOP ACTION RECEIVED")
-                isStopping = true
-                stopListening()
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopEverything()
                 stopSelf()
                 return START_NOT_STICKY
             }
 
-            else -> {
-                sendDebug(
-                    "UNKNOWN ACTION: ${intent?.action}"
-                )
+            ACTION_START -> {
+                if (!serviceRunning) {
+                    serviceRunning = true
+                    startForeground(
+                        NOTIFICATION_ID,
+                        createNotification("Starting ACRUX listening...")
+                    )
+                    debug("ACRUX is starting")
+                    loadModel()
+                }
             }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
-    private fun sendDebug(message: String) {
-        Log.d("ACRUX_DEBUG", message)
-
-        val intent = Intent(ACTION_DEBUG)
-            .setPackage(packageName)
-            .putExtra(EXTRA_DEBUG, message)
-
-        sendBroadcast(intent)
-    }
-
-    private fun startForegroundNotification() {
-
-        val notification: Notification =
-            NotificationCompat.Builder(
-                this,
-                CHANNEL_ID
-            )
-                .setContentTitle("ACRUX is starting")
-                .setContentText(
-                    "Preparing microphone and offline voice recognition."
-                )
-                .setSmallIcon(
-                    android.R.drawable.ic_btn_speak_now
-                )
-                .setOngoing(true)
-                .setCategory(
-                    NotificationCompat.CATEGORY_SERVICE
-                )
-                .setPriority(
-                    NotificationCompat.PRIORITY_LOW
-                )
-                .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(
-                NOTIFICATION_ID,
-                notification
-            )
-        }
-    }
-
-    private fun sendStatusNotification(message: String) {
-
-        val notification =
-            NotificationCompat.Builder(
-                this,
-                CHANNEL_ID
-            )
-                .setContentTitle("ACRUX voice service")
-                .setContentText(message)
-                .setSmallIcon(
-                    android.R.drawable.ic_btn_speak_now
-                )
-                .setOngoing(true)
-                .setCategory(
-                    NotificationCompat.CATEGORY_SERVICE
-                )
-                .setPriority(
-                    NotificationCompat.PRIORITY_LOW
-                )
-                .build()
-
-        val manager =
-            getSystemService(
-                NotificationManager::class.java
-            )
-
-        manager.notify(
-            NOTIFICATION_ID,
-            notification
-        )
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "ACRUX Background Voice",
+                "ACRUX Background Listening",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description =
-                    "ACRUX microphone listening status"
-                setShowBadge(false)
-            }
+            )
+            channel.description = "ACRUX wake word listening service"
 
             val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.createNotificationChannel(channel)
         }
     }
 
-    private fun startVosk() {
+    private fun createNotification(message: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("ACRUX is listening")
+            .setContentText(message)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+    }
 
-        sendDebug("CHECKING OFFLINE MODEL")
+    private fun updateNotification(message: String) {
+        val manager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        val modelDirectory =
-            File(filesDir, MODEL_NAME)
+        manager.notify(NOTIFICATION_ID, createNotification(message))
+    }
 
-        if (
-            !File(
-                modelDirectory,
-                "am/final.mdl"
-            ).exists()
-        ) {
-            sendDebug("OFFLINE MODEL NOT FOUND")
-            sendStatusNotification(
-                "Downloading offline voice model..."
-            )
+    private fun debug(message: String) {
+        Log.d("ACRUX_SERVICE", message)
 
-            downloadAndExtractModel(modelDirectory)
-            sendDebug("MODEL DOWNLOAD AND EXTRACTION FINISHED")
-        } else {
-            sendDebug("OFFLINE MODEL ALREADY EXISTS")
-        }
+        val intent = Intent(ACTION_DEBUG)
+        intent.setPackage(packageName)
+        intent.putExtra("message", message)
+        sendBroadcast(intent)
+    }
 
-        if (
-            !File(
-                modelDirectory,
-                "am/final.mdl"
-            ).exists()
-        ) {
-            throw IllegalStateException(
-                "Vosk model files are missing."
-            )
-        }
+    private fun sendError(message: String) {
+        debug("ERROR: $message")
 
-        if (isStopping) {
-            sendDebug("START CANCELLED: SERVICE STOPPING")
-            return
-        }
+        val intent = Intent(ACTION_ERROR)
+        intent.setPackage(packageName)
+        intent.putExtra("error", message)
+        sendBroadcast(intent)
+    }
 
-        sendDebug("LOADING VOSK MODEL")
-        sendStatusNotification(
-            "Loading offline voice recognition..."
-        )
+    private fun loadModel() {
+        if (modelLoading || !serviceRunning) return
 
-        val loadedModel =
-            Model(modelDirectory.absolutePath)
+        modelLoading = true
 
-        model = loadedModel
-        sendDebug("VOSK MODEL LOADED")
+        Thread {
+            try {
+                val modelDirectory = File(filesDir, MODEL_NAME)
 
-        if (isStopping) {
-            loadedModel.close()
-            model = null
-            sendDebug("MODEL CLOSED: SERVICE STOPPING")
-            return
-        }
-
-        sendDebug("CREATING RECOGNIZER")
-
-        val loadedRecognizer =
-            Recognizer(
-                loadedModel,
-                16000.0f
-            )
-
-        recognizer = loadedRecognizer
-        sendDebug("RECOGNIZER CREATED AT 16000 HZ")
-
-        val service =
-            VoskSpeechService(
-                loadedRecognizer,
-                16000.0f
-            )
-
-        speechService = service
-
-        sendDebug("CALLING VOSK START LISTENING")
-
-        service.startListening(
-            object : RecognitionListener {
-
-                override fun onPartialResult(
-                    hypothesis: String?
+                if (!modelDirectory.exists() ||
+                    modelDirectory.listFiles().isNullOrEmpty()
                 ) {
-                    if (hypothesis.isNullOrBlank()) return
+                    debug("Downloading offline voice model...")
+                    downloadAndExtractModel(modelDirectory)
+                }
 
-                    val now = SystemClock.elapsedRealtime()
+                if (!serviceRunning) return@Thread
 
-                    if (now - lastPartialDebugTime >= 800) {
-                        lastPartialDebugTime = now
+                debug("Loading Vosk voice model...")
 
-                        val partialText =
-                            extractRecognizedText(
-                                hypothesis,
-                                "partial"
-                            )
+                model = Model(modelDirectory.absolutePath)
 
-                        if (partialText.isNotBlank()) {
-                            sendDebug(
-                                "HEARING: $partialText"
-                            )
-                        }
+                recognizer = Recognizer(model, 16000.0f)
+
+                modelLoading = false
+
+                handler.post {
+                    if (serviceRunning) {
+                        debug("ACRUX is listening")
+                        updateNotification(
+                            "Microphone active. Say ACRUX to activate."
+                        )
+                        startVoskListening()
                     }
                 }
 
-                override fun onResult(
-                    hypothesis: String?
-                ) {
-                    sendDebug("FINAL RESULT CALLBACK RECEIVED")
-                    sendDebug(
-                        "RESULT JSON: ${hypothesis ?: "null"}"
-                    )
-                    processRecognizedText(hypothesis)
-                }
-
-                override fun onFinalResult(
-                    hypothesis: String?
-                ) {
-                    sendDebug("FINAL SPEECH CALLBACK RECEIVED")
-                    sendDebug(
-                        "FINAL JSON: ${hypothesis ?: "null"}"
-                    )
-                    processRecognizedText(hypothesis)
-                }
-
-                override fun onError(
-                    exception: Exception?
-                ) {
-                    Log.e(
-                        "ACRUX",
-                        "Recognition error",
-                        exception
-                    )
-
-                    val message =
-                        exception?.message
-                            ?: "Voice recognition error."
-
-                    sendDebug("RECOGNITION ERROR: $message")
-                    sendError(message)
-                }
-
-                override fun onTimeout() {
-                    sendDebug(
-                        "RECOGNITION TIMEOUT: restarting listening"
-                    )
-                }
+            } catch (e: Exception) {
+                modelLoading = false
+                sendError(e.message ?: "Unable to load voice model")
             }
-        )
-
-        sendDebug("VOSK START LISTENING CALLED")
+        }.start()
     }
 
-    private fun extractRecognizedText(
-        json: String,
-        field: String
-    ): String {
-        return try {
-            JSONObject(json).optString(field, "").trim()
+    private fun downloadAndExtractModel(destination: File) {
+        val zipFile = File(filesDir, "$MODEL_NAME.zip")
+
+        val connection =
+            URL(MODEL_URL).openConnection() as HttpURLConnection
+
+        connection.connectTimeout = 15000
+        connection.readTimeout = 30000
+        connection.connect()
+
+        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+            throw Exception("Model download failed: HTTP ${connection.responseCode}")
+        }
+
+        connection.inputStream.use { input ->
+            FileOutputStream(zipFile).use { output ->
+                val buffer = ByteArray(8192)
+                var count: Int
+
+                while (input.read(buffer).also { count = it } != -1) {
+                    if (!serviceRunning) {
+                        throw Exception("Service stopped during download")
+                    }
+                    output.write(buffer, 0, count)
+                }
+            }
+        }
+
+        debug("Voice model downloaded. Extracting...")
+
+        destination.parentFile?.mkdirs()
+
+        ZipInputStream(zipFile.inputStream()).use { zip ->
+            var entry = zip.nextEntry
+
+            while (entry != null) {
+                val outputFile = File(filesDir, entry.name)
+
+                if (!outputFile.canonicalPath.startsWith(
+                        filesDir.canonicalPath + File.separator
+                    )
+                ) {
+                    throw Exception("Invalid model archive")
+                }
+
+                if (entry.isDirectory) {
+                    outputFile.mkdirs()
+                } else {
+                    outputFile.parentFile?.mkdirs()
+
+                    FileOutputStream(outputFile).use { output ->
+                        zip.copyTo(output)
+                    }
+                }
+
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+
+        zipFile.delete()
+        debug("Voice model extraction completed")
+    }
+
+    private fun startVoskListening() {
+        if (!serviceRunning || capturingCommand) return
+
+        try {
+            val currentRecognizer = recognizer ?: return
+
+            stopVoskAudioOnly()
+
+            voskService = VoskSpeechService(
+                currentRecognizer,
+                16000.0f
+            )
+
+            voskService?.startListening(this)
+
+            debug("Microphone active. Say ACRUX to activate.")
+
+        } catch (e: Exception) {
+            sendError(e.message ?: "Could not start microphone listening")
+        }
+    }
+
+    private fun stopVoskAudioOnly() {
+        try {
+            voskService?.stop()
+            voskService?.shutdown()
         } catch (_: Exception) {
-            json.trim()
         }
-    }
-        private fun downloadAndExtractModel(
-        modelDirectory: File
-    ) {
 
-        val zipFile =
-            File(filesDir, "acrux-vosk-model.zip")
-
-        var connection: HttpURLConnection? = null
-
-        try {
-            sendDebug("CONNECTING TO VOSK MODEL SERVER")
-
-            connection =
-                URL(MODEL_URL).openConnection()
-                    as HttpURLConnection
-
-            connection.connectTimeout = 30000
-            connection.readTimeout = 60000
-            connection.requestMethod = "GET"
-            connection.connect()
-
-            if (
-                connection.responseCode !=
-                HttpURLConnection.HTTP_OK
-            ) {
-                throw IllegalStateException(
-                    "Model download failed: HTTP ${connection.responseCode}"
-                )
-            }
-
-            sendDebug("DOWNLOADING MODEL FILE")
-
-            connection.inputStream.use { input ->
-                FileOutputStream(zipFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-
-            sendDebug(
-                "MODEL ZIP DOWNLOADED: ${zipFile.length()} BYTES"
-            )
-
-            val root =
-                filesDir.canonicalFile
-
-            ZipInputStream(
-                zipFile.inputStream().buffered()
-            ).use { zip ->
-
-                var entry = zip.nextEntry
-
-                while (entry != null) {
-
-                    val outputFile =
-                        File(
-                            filesDir,
-                            entry.name
-                        ).canonicalFile
-
-                    if (
-                        outputFile.path != root.path &&
-                        !outputFile.path.startsWith(
-                            root.path + File.separator
-                        )
-                    ) {
-                        throw SecurityException(
-                            "Invalid model archive."
-                        )
-                    }
-
-                    if (entry.isDirectory) {
-                        outputFile.mkdirs()
-                    } else {
-                        outputFile.parentFile?.mkdirs()
-
-                        FileOutputStream(
-                            outputFile
-                        ).use { output ->
-                            zip.copyTo(output)
-                        }
-                    }
-
-                    zip.closeEntry()
-                    entry = zip.nextEntry
-                }
-            }
-
-            if (
-                !File(
-                    modelDirectory,
-                    "am/final.mdl"
-                ).exists()
-            ) {
-                throw IllegalStateException(
-                    "Downloaded model is incomplete."
-                )
-            }
-
-            sendDebug("MODEL EXTRACTION SUCCESSFUL")
-
-        } finally {
-            connection?.disconnect()
-
-            if (zipFile.exists()) {
-                zipFile.delete()
-            }
-        }
+        voskService = null
     }
 
-    private fun processRecognizedText(
-        json: String?
-    ) {
+    override fun onPartialResult(hypothesis: String?) {
+        // Partial Vosk results are intentionally ignored.
+    }
 
-        if (json.isNullOrBlank()) {
-            sendDebug("EMPTY RECOGNITION RESULT")
+    override fun onResult(hypothesis: String?) {
+        processVoskText(hypothesis)
+    }
+
+    override fun onFinalResult(hypothesis: String?) {
+        processVoskText(hypothesis)
+    }
+
+    private fun processVoskText(json: String?) {
+        if (json.isNullOrBlank() || !serviceRunning || capturingCommand) {
             return
         }
 
         try {
-            val text =
-                JSONObject(json)
-                    .optString("text")
-                    .lowercase(Locale.ROOT)
+            val text = JSONObject(json)
+                .optString("text", "")
+                .lowercase(Locale.ROOT)
+                .trim()
+
+            if (text.isBlank()) return
+
+            debug("Heard: $text")
+
+            val wakeIndex = text.indexOf("acrux")
+                .takeIf { it >= 0 }
+                ?: text.indexOf("a crux")
+
+            if (wakeIndex >= 0) {
+                val wakeLength =
+                    if (text.startsWith("a crux", wakeIndex)) 6 else 5
+
+                val command = text
+                    .substring(wakeIndex + wakeLength)
                     .trim()
 
-            if (text.isBlank()) {
-                sendDebug("NO WORDS RECOGNIZED")
-                return
-            }
-
-            sendDebug("RECOGNIZED SPEECH: $text")
-
-            val normalized =
-                text
-                    .replace(
-                        Regex("[^a-z0-9 ]"),
-                        " "
-                    )
-                    .replace(
-                        Regex("\\s+"),
-                        " "
-                    )
-                    .trim()
-
-            val wakeWordFound =
-                normalized.contains("acrux") ||
-                normalized.contains("a crux")
-
-            if (wakeWordFound) {
-
-                val command =
-                    normalized
-                        .replace("acrux", "")
-                        .replace("a crux", "")
-                        .trim()
-
-                awaitingCommand = true
-
-                sendDebug("WAKE WORD DETECTED: ACRUX")
-
-                sendBroadcast(
-                    Intent(ACTION_WAKE_WORD)
-                        .setPackage(packageName)
-                )
-
-                if (command.isNotBlank()) {
-                    sendDebug(
-                        "WAKE WORD AND COMMAND IN SAME SENTENCE"
-                    )
-                    sendCommand(command)
-                }
-
-                return
-            }
-
-            if (awaitingCommand) {
-                sendDebug("COMMAND PHRASE DETECTED")
-                sendCommand(normalized)
-            } else {
-                sendDebug(
-                    "SPEECH DETECTED BUT NO WAKE WORD"
-                )
+                activateAcrux(command)
             }
 
         } catch (e: Exception) {
-            Log.e(
-                "ACRUX",
-                "Recognition parsing error",
-                e
-            )
-
-            sendDebug(
-                "PARSING ERROR: ${e.message}"
-            )
+            Log.e("ACRUX_SERVICE", "Vosk result error", e)
         }
     }
 
-    private fun sendCommand(
-        command: String
-    ) {
+    private fun activateAcrux(command: String) {
+        if (!serviceRunning || capturingCommand) return
 
-        awaitingCommand = false
+        capturingCommand = true
 
-        sendDebug("SENDING COMMAND TO MAIN ACTIVITY: $command")
+        debug("ACRUX wake word detected")
 
-        sendBroadcast(
-            Intent(ACTION_COMMAND)
-                .setPackage(packageName)
-                .putExtra(
-                    EXTRA_COMMAND,
-                    command
-                )
-        )
+        stopVoskAudioOnly()
+
+        val wakeIntent = Intent(ACTION_WAKE_WORD)
+        wakeIntent.setPackage(packageName)
+        sendBroadcast(wakeIntent)
+
+        if (command.isNotBlank()) {
+            sendCommand(command)
+        } else {
+            handler.postDelayed({
+                startAndroidCommandRecognition()
+            }, 1500)
+        }
     }
-
-    private fun sendError(
-        message: String
-    ) {
-
-        Log.e("ACRUX", message)
-        sendDebug("SERVICE ERROR: $message")
-
-        sendBroadcast(
-            Intent(ACTION_ERROR)
-                .setPackage(packageName)
-                .putExtra(
-                    EXTRA_ERROR,
-                    message
-                )
-        )
-    }
-
-    private fun stopListening() {
-
-        awaitingCommand = false
-        sendDebug("STOPPING VOICE RECOGNITION")
+        private fun startAndroidCommandRecognition() {
+        if (!serviceRunning) return
 
         try {
-            speechService?.stop()
-            speechService?.shutdown()
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                sendError("Android speech recognition is unavailable")
+                resumeWakeWordListening()
+                return
+            }
+
+            destroyAndroidRecognizer()
+
+            androidRecognizer =
+                SpeechRecognizer.createSpeechRecognizer(this)
+
+            androidRecognizer?.setRecognitionListener(
+                object : RecognitionListener {
+
+                    override fun onReadyForSpeech(params: android.os.Bundle?) {
+                        debug("Listening for your command...")
+                        updateNotification("Listening for your command...")
+                    }
+
+                    override fun onBeginningOfSpeech() {
+                        debug("Command detected")
+                    }
+
+                    override fun onRmsChanged(rmsdB: Float) {
+                    }
+
+                    override fun onBufferReceived(buffer: ByteArray?) {
+                    }
+
+                    override fun onEndOfSpeech() {
+                        debug("Processing command...")
+                    }
+
+                    override fun onError(error: Int) {
+                        debug("Speech recognition error: $error")
+                        resumeWakeWordListening()
+                    }
+
+                    override fun onResults(results: android.os.Bundle?) {
+                        val matches = results?.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION
+                        )
+
+                        val command = matches?.firstOrNull()?.trim()
+
+                        if (!command.isNullOrBlank()) {
+                            sendCommand(command)
+                        } else {
+                            debug("No command was detected")
+                            resumeWakeWordListening()
+                        }
+                    }
+
+                    override fun onPartialResults(
+                        partialResults: android.os.Bundle?
+                    ) {
+                    }
+
+                    override fun onEvent(
+                        eventType: Int,
+                        params: android.os.Bundle?
+                    ) {
+                    }
+                }
+            )
+
+            val speechIntent = Intent(
+                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+            ).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE,
+                    Locale.getDefault().toLanguageTag()
+                )
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            }
+
+            androidRecognizer?.startListening(speechIntent)
+
         } catch (e: Exception) {
-            Log.e(
-                "ACRUX",
-                "Speech shutdown error",
-                e
+            sendError(
+                e.message ?: "Could not start Android speech recognition"
             )
-            sendDebug(
-                "SPEECH SHUTDOWN ERROR: ${e.message}"
-            )
+            resumeWakeWordListening()
+        }
+    }
+
+    private fun sendCommand(command: String) {
+        if (command.isBlank()) {
+            resumeWakeWordListening()
+            return
         }
 
-        speechService = null
+        debug("Command: $command")
+
+        val intent = Intent(ACTION_COMMAND)
+        intent.setPackage(packageName)
+        intent.putExtra("command", command)
+        sendBroadcast(intent)
+
+        handler.postDelayed({
+            resumeWakeWordListening()
+        }, 3000)
+    }
+
+    private fun destroyAndroidRecognizer() {
+        try {
+            androidRecognizer?.cancel()
+            androidRecognizer?.destroy()
+        } catch (_: Exception) {
+        }
+
+        androidRecognizer = null
+    }
+
+    private fun resumeWakeWordListening() {
+        handler.removeCallbacksAndMessages(null)
+
+        destroyAndroidRecognizer()
+
+        capturingCommand = false
+
+        if (serviceRunning) {
+            handler.postDelayed({
+                if (serviceRunning && !capturingCommand) {
+                    updateNotification(
+                        "Microphone active. Say ACRUX to activate."
+                    )
+                    startVoskListening()
+                }
+            }, 2000)
+        }
+    }
+
+    override fun onError(exception: Exception?) {
+        debug(
+            "Vosk error: ${exception?.message ?: "Unknown error"}"
+        )
+
+        if (serviceRunning && !capturingCommand) {
+            handler.postDelayed({
+                startVoskListening()
+            }, 1500)
+        }
+    }
+
+    override fun onTimeout() {
+        if (serviceRunning && !capturingCommand) {
+            handler.post {
+                startVoskListening()
+            }
+        }
+    }
+
+    private fun stopEverything() {
+        serviceRunning = false
+        capturingCommand = false
+
+        handler.removeCallbacksAndMessages(null)
+
+        stopVoskAudioOnly()
+        destroyAndroidRecognizer()
 
         try {
             recognizer?.close()
-        } catch (e: Exception) {
-            Log.e(
-                "ACRUX",
-                "Recognizer close error",
-                e
-            )
-            sendDebug(
-                "RECOGNIZER CLOSE ERROR: ${e.message}"
-            )
+        } catch (_: Exception) {
         }
 
         recognizer = null
 
         try {
             model?.close()
-        } catch (e: Exception) {
-            Log.e(
-                "ACRUX",
-                "Model close error",
-                e
-            )
-            sendDebug(
-                "MODEL CLOSE ERROR: ${e.message}"
-            )
+        } catch (_: Exception) {
         }
 
         model = null
-        sendDebug("VOICE RECOGNITION STOPPED")
+        modelLoading = false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+
+        debug("ACRUX background listening stopped")
     }
 
     override fun onDestroy() {
-
-        isStopping = true
-        sendDebug("SERVICE DESTROYED")
-
-        stopListening()
-        executor.shutdownNow()
-
+        stopEverything()
         super.onDestroy()
     }
-
-    override fun onBind(
-        intent: Intent?
-    ): IBinder? = null
 }
+    
