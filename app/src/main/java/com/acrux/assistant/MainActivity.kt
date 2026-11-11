@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         ) { }
 
     private val voiceReceiver = object : BroadcastReceiver() {
+
         override fun onReceive(context: Context?, intent: Intent?) {
 
             when (intent?.action) {
@@ -114,7 +115,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     runOnUiThread {
                         statusText.text = "ACRUX ACTIVATED"
                         addDebugLine("WAKE WORD: ACRUX ACTIVATED")
-                        speak("Yes, I am listening")
                     }
                 }
 
@@ -144,7 +144,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
                 ACTION_DEBUG -> {
                     val message =
-                        intent.getStringExtra("debug") ?: ""
+                        intent.getStringExtra("message")
+                            ?: intent.getStringExtra("debug")
+                            ?: ""
 
                     if (message.isNotBlank()) {
                         runOnUiThread {
@@ -470,8 +472,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
             else -> null
         }
-    }
-
+}
     private fun askGroq(message: String): String {
 
         val url = URL(GROQ_URL)
@@ -553,7 +554,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             .getString("content")
             .trim()
     }
-        private fun showReply(message: String) {
+
+    private fun showReply(message: String) {
         addChatMessage("YOU", message, true)
     }
 
