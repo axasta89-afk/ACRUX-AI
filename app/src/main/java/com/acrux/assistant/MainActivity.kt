@@ -1,4 +1,3 @@
-
 package com.acrux.assistant
 
 import android.Manifest
@@ -32,6 +31,8 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
@@ -164,6 +165,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         val sendButton = makeButton("SEND")
         val micButton = makeButton("🎙 VOICE INPUT")
+        val historyButton = makeButton("CHAT HISTORY")
+        val clearHistoryButton = makeButton("CLEAR HISTORY")
         val startButton = makeButton("▶ START BACKGROUND")
         val stopButton = makeButton("■ STOP BACKGROUND")
 
@@ -178,6 +181,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         micButton.setOnClickListener {
             requestVoiceInput()
+        }
+
+        historyButton.setOnClickListener {
+            showChatHistory()
+        }
+
+        clearHistoryButton.setOnClickListener {
+            ChatHistory.clear(this)
+            showResponse("Chat history cleared successfully.")
         }
 
         startButton.setOnClickListener {
@@ -203,7 +215,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         root.addView(responseText, marginParams(bottom = 24))
         root.addView(inputField, marginParams(bottom = 12))
         root.addView(sendButton, marginParams(bottom = 12))
-        root.addView(micButton, marginParams(bottom = 24))
+        root.addView(micButton, marginParams(bottom = 12))
+        root.addView(historyButton, marginParams(bottom = 12))
+        root.addView(clearHistoryButton, marginParams(bottom = 24))
         root.addView(startButton, marginParams(bottom = 12))
         root.addView(stopButton)
 
@@ -213,6 +227,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private fun processCommand(rawCommand: String) {
 
         val command = CommandEngine.normalize(rawCommand)
+
+        // Save user's message.
+        ChatHistory.save(this, "user", rawCommand)
 
         when (command) {
             "start background",
@@ -230,19 +247,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         if (CommandEngine.isStop(rawCommand)) {
             tts?.stop()
-            showResponse("Voice output stopped, Sir ASTA.")
+            showReply("Voice output stopped, Sir ASTA.")
             return
         }
 
         if (CommandEngine.isFreeze(rawCommand)) {
             standby = true
             statusText.text = "● STANDBY MODE"
-            showResponse("Entering standby mode, Sir ASTA.")
+            showReply("Entering standby mode, Sir ASTA.")
             return
         }
 
         if (standby && !CommandEngine.isArise(rawCommand)) {
-            showResponse("ACRUX is in standby. Say ARISE to resume.")
+            showReply("ACRUX is in standby. Say ARISE to resume.")
             return
         }
 
@@ -251,7 +268,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             statusText.text = "● SYSTEM ONLINE"
 
             val reply = "I am online, Sir ASTA."
-            showResponse(reply)
+            showReply(reply)
             speak(reply)
             return
         }
@@ -259,12 +276,49 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val localReply = CommandEngine.getLocalReply(rawCommand)
 
         if (localReply != null) {
-            showResponse(localReply)
+            showReply(localReply)
             speak(localReply)
             return
         }
 
         askGroq(rawCommand.trim())
+    }
+
+    private fun showChatHistory() {
+        val messages = ChatHistory.load(this)
+
+        if (messages.isEmpty()) {
+            showResponse("No chat history available yet.")
+            return
+        }
+
+        val formatter = SimpleDateFormat(
+            "dd MMM, hh:mm a",
+            Locale.getDefault()
+        )
+
+        val historyText = buildString {
+            append("════ CHAT HISTORY ════\n\n")
+
+            messages.takeLast(50).forEach { message ->
+                val speaker = if (message.role == "user") {
+                    "YOU"
+                } else {
+                    "ACRUX"
+                }
+
+                append("[$speaker]\n")
+                append(message.content)
+                append("\n")
+                append(formatter.format(Date(message.timestamp)))
+                append("\n\n")
+                append("────────────────\n\n")
+            }
+
+            append("Showing latest ${messages.size.coerceAtMost(50)} messages.")
+        }
+
+        responseText.text = historyText
     }
 
     private fun requestBackgroundStart() {
@@ -337,7 +391,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             GROQ_API_KEY == "PASTE_YOUR_NEW_GROQ_API_KEY_HERE" ||
             GROQ_API_KEY.isBlank()
         ) {
-            showResponse("Add your new Groq API key in the local project.")
+            showReply("Add your new Groq API key in the local project.")
             return
         }
 
@@ -357,7 +411,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
             requestInProgress = false
             statusText.text = "● SYSTEM ONLINE"
-            showResponse(reply)
+            showReply(reply)
             speak(reply)
         }
     }
@@ -497,6 +551,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         } catch (_: ActivityNotFoundException) {
             showResponse("No speech recognition service is available.")
         }
+    }
+
+    private fun showReply(message: String) {
+        ChatHistory.save(this, "assistant", message)
+        showResponse(message)
     }
 
     private fun showResponse(message: String) {
