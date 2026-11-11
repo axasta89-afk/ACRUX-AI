@@ -38,12 +38,12 @@ import java.util.Locale
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        // Paste your Groq API key between the quotation marks.
+        // Keep your existing Groq API key here.
         private const val GROQ_API_KEY =
             "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"
 
         private const val GROQ_MODEL =
-            "llama-3.3-70b-versatile"
+            "openai/gpt-oss-120b"
 
         private const val GROQ_URL =
             "https://api.groq.com/openai/v1/chat/completions"
@@ -280,7 +280,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         if (
-            GROQ_API_KEY == "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" ||
+            GROQ_API_KEY == "PASTE_YOUR_GROQ_API_KEY_HERE" ||
             GROQ_API_KEY.isBlank()
         ) {
             showResponse("Groq API key has not been added yet.")
