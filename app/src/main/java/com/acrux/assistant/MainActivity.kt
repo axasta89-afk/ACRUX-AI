@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         // Replace this placeholder locally with your NEW Groq key.
         // Never share the key in chat or publish it in a public repository.
         private const val GROQ_API_KEY =
-            "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
+            "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"
 
         private const val GROQ_MODEL =
             "openai/gpt-oss-120b"
