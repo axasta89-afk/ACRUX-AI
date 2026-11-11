@@ -31,16 +31,13 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     companion object {
-        // Keep your existing Groq API key here.
         private const val GROQ_API_KEY =
-            "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"
+            "PASTE_YOUR_GROQ_API_KEY_HERE"
 
         private const val GROQ_MODEL =
             "openai/gpt-oss-120b"
@@ -194,75 +191,36 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun processCommand(rawCommand: String) {
-        val command = rawCommand
-            .trim()
-            .lowercase(Locale.ROOT)
-            .replace(Regex("[^a-z0-9 ]"), "")
-            .replace(Regex("\\s+"), " ")
 
-        if (command == "stop") {
+        if (CommandEngine.isStop(rawCommand)) {
             tts?.stop()
             showResponse("Voice output stopped, Sir ASTA.")
             return
         }
 
-        if (command == "freeze") {
+        if (CommandEngine.isFreeze(rawCommand)) {
             standby = true
             statusText.text = "● STANDBY MODE"
             showResponse("Entering standby mode, Sir ASTA.")
             return
         }
 
-        if (standby && command != "arise") {
+        if (standby && !CommandEngine.isArise(rawCommand)) {
             showResponse("ACRUX is in standby. Say ARISE to resume.")
             return
         }
 
-        if (command == "arise") {
+        if (CommandEngine.isArise(rawCommand)) {
             standby = false
             statusText.text = "● SYSTEM ONLINE"
+
             val reply = "I am online, Sir ASTA."
             showResponse(reply)
             speak(reply)
             return
         }
 
-        val greetings = setOf(
-            "hi", "hii", "hiii", "hiiii",
-            "hello", "helloo", "hellooo",
-            "hlo", "hloo", "hlooo",
-            "hey", "heyy", "heyyy",
-            "good morning", "good afternoon",
-            "good evening"
-        )
-
-        val localReply: String? = when {
-            command in greetings ->
-                "Hello, Sir ASTA. How can I assist you?"
-
-            command.contains("your name") ->
-                "I am ACRUX, your personal AI assistant."
-
-            command.contains("time") ->
-                "The current time is " +
-                    LocalDateTime.now().format(
-                        DateTimeFormatter.ofPattern("hh:mm a")
-                    )
-
-            command.contains("date") || command.contains("day") ->
-                "Today is " +
-                    LocalDateTime.now().format(
-                        DateTimeFormatter.ofPattern("EEEE, dd MMMM yyyy")
-                    )
-
-            command.contains("status") ->
-                "All basic ACRUX systems are online."
-
-            command == "help" ->
-                "Ask me anything. Say FREEZE for standby, ARISE to resume, or STOP to stop voice output."
-
-            else -> null
-        }
+        val localReply = CommandEngine.getLocalReply(rawCommand)
 
         if (localReply != null) {
             showResponse(localReply)
@@ -275,7 +233,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun askGroq(prompt: String) {
         if (requestInProgress) {
-            showResponse("Please wait. ACRUX is processing your previous request.")
+            showResponse(
+                "Please wait. ACRUX is processing your previous request."
+            )
             return
         }
 
