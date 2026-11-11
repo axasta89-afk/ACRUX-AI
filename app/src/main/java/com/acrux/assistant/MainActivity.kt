@@ -71,9 +71,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) {
-            // Foreground service can still start if notification
-            // permission is denied, but its notification may not
-            // appear in the notification drawer.
             startBackgroundService()
         }
 
@@ -288,8 +285,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun startBackgroundService() {
         try {
-            val serviceIntent =
-                AcruxBackgroundService.startIntent(this)
+            val serviceIntent = Intent(
+                this,
+                AcruxBackgroundService::class.java
+            ).apply {
+                action = AcruxBackgroundService.ACTION_START
+            }
 
             ContextCompat.startForegroundService(
                 this,
@@ -308,15 +309,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun stopBackgroundService() {
-        val serviceIntent =
-            Intent(this, AcruxBackgroundService::class.java)
+        val serviceIntent = Intent(
+            this,
+            AcruxBackgroundService::class.java
+        ).apply {
+            action = AcruxBackgroundService.ACTION_STOP
+        }
 
-        val stopped = stopService(serviceIntent)
-
-        if (stopped) {
+        try {
+            startService(serviceIntent)
+            showResponse("ACRUX background service stop requested.")
+        } catch (error: Exception) {
+            stopService(serviceIntent)
             showResponse("ACRUX background service stopped.")
-        } else {
-            showResponse("ACRUX background service is not running.")
         }
     }
 
