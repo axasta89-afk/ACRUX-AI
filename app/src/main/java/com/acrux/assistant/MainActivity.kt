@@ -1,22 +1,17 @@
 package com.acrux.assistant
 
 import android.Manifest
-import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
+import android.speech.SpeechRecognizer
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -30,56 +25,56 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
 
-class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
-
-    companion object {
-        private const val GROQ_API_KEY =
-            "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
-
-        private const val GROQ_MODEL = "openai/gpt-oss-120b"
-        private const val GROQ_URL =
-            "https://api.groq.com/openai/v1/chat/completions"
-
-        private const val ACTION_START =
-            "com.acrux.assistant.ACTION_START"
-        private const val ACTION_STOP =
-            "com.acrux.assistant.ACTION_STOP"
-        private const val ACTION_WAKE_WORD =
-            "com.acrux.assistant.ACTION_WAKE_WORD"
-        private const val ACTION_COMMAND =
-            "com.acrux.assistant.ACTION_COMMAND"
-        private const val ACTION_ERROR =
-            "com.acrux.assistant.ACTION_ERROR"
-        private const val ACTION_DEBUG =
-            "com.acrux.assistant.ACTION_DEBUG"
-    }
+class MainActivity : ComponentActivity() {
 
     private lateinit var rootLayout: LinearLayout
-    private lateinit var chatLayout: LinearLayout
-    private lateinit var inputField: EditText
     private lateinit var statusText: TextView
-    private lateinit var scrollView: ScrollView
+    private lateinit var responseText: TextView
+    private lateinit var inputField: EditText
     private lateinit var debugText: TextView
+    private lateinit var chatContainer: LinearLayout
+    private lateinit var scrollView: ScrollView
 
-    private val debugLines = mutableListOf<String>()
-
-    private var textToSpeech: TextToSpeech? = null
-    private var ttsReady = false
     private var receiverRegistered = false
+    private var isBackgroundRunning = false
+
+    private val mainHandler = android.os.Handler(
+        android.os.Looper.getMainLooper()
+    )
+
+    private val permissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val microphoneGranted =
+                permissions[Manifest.permission.RECORD_AUDIO] == true
+
+            if (microphoneGranted) {
+                startBackgroundListening()
+            } else {
+                showStatus("Microphone permission is required")
+                addDebug("Microphone permission denied")
+            }
+        }
 
     private val voiceLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
 
-            if (result.resultCode == Activity.RESULT_OK) {
-                val spokenText =
-                    result.data?.getStringArrayListExtra(
+            if (result.resultCode == RESULT_OK) {
+                val spokenText = result.data
+                    ?.getStringArrayListExtra(
                         RecognizerIntent.EXTRA_RESULTS
-                    )?.firstOrNull()
+                    )
+                    ?.firstOrNull()
+                    ?.trim()
 
                 if (!spokenText.isNullOrBlank()) {
                     inputField.setText(spokenText)
@@ -88,70 +83,52 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-    private val microphonePermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-
-            if (granted) {
-                launchVoiceInput()
-            } else {
-                showToast("Microphone permission required")
-            }
-        }
-
-    private val notificationPermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { }
-
-    private val voiceReceiver = object : BroadcastReceiver() {
+    private val acruxReceiver = object : BroadcastReceiver() {
 
         override fun onReceive(context: Context?, intent: Intent?) {
 
             when (intent?.action) {
 
-                ACTION_WAKE_WORD -> {
-                    runOnUiThread {
-                        statusText.text = "ACRUX ACTIVATED"
-                        addDebugLine("WAKE WORD: ACRUX ACTIVATED")
+                AcruxBackgroundService.ACTION_WAKE_WORD -> {
+                    showStatus("ACRUX activated")
+                    addDebug("Wake word detected")
+                }
+
+                AcruxBackgroundService.ACTION_COMMAND -> {
+                    val command = intent.getStringExtra("command")
+                        ?: intent.getStringExtra("message")
+                        ?: ""
+
+                    if (command.isNotBlank()) {
+                        addDebug("Command received: $command")
                     }
                 }
 
-                ACTION_COMMAND -> {
-                    val command =
-                        intent.getStringExtra("command") ?: ""
+                AcruxBackgroundService.ACTION_REPLY -> {
+                    val reply = intent.getStringExtra("reply")
+                        ?: intent.getStringExtra("message")
+                        ?: ""
 
-                    runOnUiThread {
-                        addDebugLine("COMMAND RECEIVED: $command")
-
-                        if (command.isNotBlank()) {
-                            sendMessage(command)
-                        }
+                    if (reply.isNotBlank()) {
+                        showReply(reply)
                     }
                 }
 
-                ACTION_ERROR -> {
-                    val error =
-                        intent.getStringExtra("error") ?: "Unknown error"
+                AcruxBackgroundService.ACTION_ERROR -> {
+                    val error = intent.getStringExtra("message")
+                        ?: "Unknown error"
 
-                    runOnUiThread {
-                        statusText.text = "BACKGROUND ERROR"
-                        addDebugLine("ERROR: $error")
-                        showToast(error)
-                    }
+                    showStatus("ACRUX error")
+                    addDebug(error)
                 }
 
-                ACTION_DEBUG -> {
-                    val message =
-                        intent.getStringExtra("message")
-                            ?: intent.getStringExtra("debug")
-                            ?: ""
+                AcruxBackgroundService.ACTION_DEBUG -> {
+                    val message = intent.getStringExtra("message")
+                        ?: intent.getStringExtra("debug")
+                        ?: ""
 
                     if (message.isNotBlank()) {
-                        runOnUiThread {
-                            addDebugLine(message)
-                        }
+                        addDebug(message)
                     }
                 }
             }
@@ -161,494 +138,403 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        textToSpeech = TextToSpeech(this, this)
+        createInterface()
+        registerAcruxReceiver()
 
-        createDashboard()
-        registerVoiceReceiver()
-        requestNotificationPermission()
+        showStatus("ACRUX is ready")
+        addDebug("Application started")
+        loadSavedHistory()
     }
 
-    private fun createDashboard() {
+    private fun createInterface() {
 
         rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(20), dp(18), dp(12))
-            setBackgroundColor(Color.rgb(10, 14, 25))
+            setPadding(24, 24, 24, 24)
+            setBackgroundColor(
+                android.graphics.Color.rgb(12, 16, 28)
+            )
         }
 
-        val heading = TextView(this).apply {
+        val title = TextView(this).apply {
             text = "A C R U X"
-            textSize = 30f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 32f
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(android.graphics.Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 18, 0, 4)
         }
 
         val subtitle = TextView(this).apply {
             text = "PERSONAL AI ASSISTANT"
             textSize = 12f
             gravity = Gravity.CENTER
-            setTextColor(Color.LTGRAY)
+            setTextColor(android.graphics.Color.LTGRAY)
+            setPadding(0, 0, 0, 24)
         }
 
         statusText = TextView(this).apply {
-            text = "SYSTEM READY"
-            textSize = 13f
+            text = "ACRUX is ready"
+            textSize = 16f
             gravity = Gravity.CENTER
-            setTextColor(Color.GREEN)
-            setPadding(0, dp(10), 0, dp(10))
-        }
-
-        val debugHeading = TextView(this).apply {
-            text = "VOICE DEBUG"
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.rgb(90, 190, 255))
-            setPadding(dp(10), dp(6), dp(10), 0)
-        }
-
-        debugText = TextView(this).apply {
-            text = "Waiting for background voice service..."
-            textSize = 11f
-            setTextColor(Color.WHITE)
-            setPadding(dp(10), dp(5), dp(10), dp(8))
-            maxLines = 5
-        }
-
-        val debugPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(
-                Color.rgb(20, 27, 43),
-                12
+            setTextColor(
+                android.graphics.Color.rgb(80, 220, 160)
             )
-            addView(debugHeading)
-            addView(debugText)
+            setPadding(12, 16, 12, 16)
+            setBackgroundColor(
+                android.graphics.Color.rgb(25, 35, 48)
+            )
         }
 
-        chatLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-        }
-
-        scrollView = ScrollView(this).apply {
-            addView(chatLayout)
-            background = roundedBackground(
-                Color.rgb(20, 27, 43),
-                16
+        responseText = TextView(this).apply {
+            text = "Hello. I am ACRUX."
+            textSize = 16f
+            setTextColor(android.graphics.Color.WHITE)
+            setPadding(14, 18, 14, 18)
+            setBackgroundColor(
+                android.graphics.Color.rgb(25, 35, 48)
             )
         }
 
         inputField = EditText(this).apply {
-            hint = "Message ACRUX..."
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
+            hint = "Ask ACRUX anything..."
             textSize = 16f
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = roundedBackground(
-                Color.rgb(30, 39, 58),
-                12
+            setSingleLine(false)
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(android.graphics.Color.LTGRAY)
+            setPadding(14, 12, 14, 12)
+            setBackgroundColor(
+                android.graphics.Color.rgb(35, 43, 58)
             )
         }
 
-        rootLayout.addView(
-            heading,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48)
+        scrollView = ScrollView(this).apply {
+            isFillViewport = false
+            setBackgroundColor(
+                android.graphics.Color.rgb(17, 23, 36)
+            )
+        }
+
+        chatContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12, 12, 12, 12)
+        }
+
+        scrollView.addView(
+            chatContainer,
+            ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT
             )
         )
 
-        rootLayout.addView(
-            subtitle,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(25)
+        debugText = TextView(this).apply {
+            text = "VOICE DEBUG\nWaiting..."
+            textSize = 12f
+            setTextColor(
+                android.graphics.Color.rgb(150, 190, 220)
             )
-        )
-
-        rootLayout.addView(
-            statusText,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(42)
+            setPadding(12, 12, 12, 12)
+            setBackgroundColor(
+                android.graphics.Color.rgb(20, 27, 40)
             )
-        )
+        }
 
-        rootLayout.addView(
-            debugPanel,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(105)
-            )
-        )
+        rootLayout.addView(title)
+        rootLayout.addView(subtitle)
+        rootLayout.addView(statusText)
+        rootLayout.addView(responseText)
 
-        rootLayout.addView(
-            scrollView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ).apply {
-                topMargin = dp(10)
-                bottomMargin = dp(12)
-            }
-        )
+        addSpace(rootLayout, 12)
 
         rootLayout.addView(
             inputField,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(55)
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
 
-        addButton("SEND MESSAGE") {
+        addSpace(rootLayout, 10)
+
+        addButton(rootLayout, "SEND MESSAGE") {
             val message = inputField.text.toString().trim()
 
-            if (message.isNotEmpty()) {
-                inputField.setText("")
+            if (message.isNotBlank()) {
                 sendMessage(message)
             }
         }
 
-        addButton("VOICE INPUT") {
-            checkMicrophonePermission()
+        addButton(rootLayout, "VOICE INPUT") {
+            startVoiceInput()
         }
 
-        addButton("CHAT HISTORY") {
-            showHistory()
+        addButton(rootLayout, "CHAT HISTORY") {
+            showChatHistory()
         }
 
-        addButton("CLEAR HISTORY") {
-            ChatHistory.clear(this)
-            chatLayout.removeAllViews()
-            showReply("Chat history cleared.")
+        addButton(rootLayout, "CLEAR HISTORY") {
+            clearChatHistory()
         }
 
-        addButton("START BACKGROUND LISTENING") {
-            startBackgroundService()
+        addButton(rootLayout, "START BACKGROUND LISTENING") {
+            checkPermissionsAndStart()
         }
 
-        addButton("STOP BACKGROUND LISTENING") {
-            stopBackgroundService()
+        addButton(rootLayout, "STOP BACKGROUND LISTENING") {
+            stopBackgroundListening()
         }
+
+        addSpace(rootLayout, 12)
+
+        val debugHeading = TextView(this).apply {
+            text = "VOICE DEBUG"
+            textSize = 13f
+            setTextColor(android.graphics.Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        rootLayout.addView(debugHeading)
+
+        rootLayout.addView(
+            debugText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                130
+            )
+        )
+
+        addSpace(rootLayout, 10)
+
+        rootLayout.addView(
+            scrollView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
 
         setContentView(rootLayout)
-
-        showReply("ACRUX is ready. How can I help you?")
-    }
-
-    private fun addDebugLine(message: String) {
-        val time = java.text.SimpleDateFormat(
-            "HH:mm:ss",
-            Locale.getDefault()
-        ).format(java.util.Date())
-
-        debugLines.add("$time  $message")
-
-        while (debugLines.size > 5) {
-            debugLines.removeAt(0)
-        }
-
-        debugText.text = debugLines.joinToString("\n")
     }
 
     private fun addButton(
-        buttonText: String,
+        parent: LinearLayout,
+        label: String,
         action: () -> Unit
     ) {
+
         val button = Button(this).apply {
-            text = buttonText
+            text = label
             textSize = 13f
-            setTextColor(Color.WHITE)
-            background = roundedBackground(
-                Color.rgb(34, 83, 150),
-                12
-            )
-            setOnClickListener { action() }
+            isAllCaps = false
+
+            setOnClickListener {
+                action()
+            }
         }
 
-        rootLayout.addView(
+        parent.addView(
             button,
-            marginParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48)
-            )
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = 5
+            }
         )
     }
 
-    private fun sendMessage(message: String) {
+    private fun addSpace(
+        parent: LinearLayout,
+        height: Int
+    ) {
+        val space = View(this)
 
-        showReply(message)
-        ChatHistory.save(this, "user", message)
+        parent.addView(
+            space,
+            LinearLayout.LayoutParams(1, height)
+        )
+    }
 
-        val localResponse = handleLocalCommand(message)
-
-        if (localResponse != null) {
-            showResponse(localResponse)
-            speak(localResponse)
-            ChatHistory.save(this, "assistant", localResponse)
-            return
-        }
-
-        if (GROQ_API_KEY == "PASTE_YOUR_NEW_GROQ_API_KEY_HERE") {
-            val warning =
-                "Groq API key is not configured. Voice wake-word testing still works."
-
-            showResponse(warning)
-            speak(warning)
-            return
-        }
-
-        statusText.text = "ACRUX THINKING..."
-
-        thread {
-            try {
-                val response = askGroq(message)
-
-                runOnUiThread {
-                    statusText.text = "SYSTEM READY"
-                    showResponse(response)
-                    speak(response)
-                    ChatHistory.save(
-                        this,
-                        "assistant",
-                        response
-                    )
-                }
-
-            } catch (e: Exception) {
-                runOnUiThread {
-                    statusText.text = "CONNECTION ERROR"
-
-                    val errorMessage =
-                        "Groq connection error: ${e.message}"
-
-                    showResponse(errorMessage)
-                }
-            }
+    private fun showStatus(message: String) {
+        runOnUiThread {
+            statusText.text = message
         }
     }
 
-    private fun handleLocalCommand(message: String): String? {
+    private fun addDebug(message: String) {
 
-        val command = message.trim().lowercase(Locale.ROOT)
+        runOnUiThread {
 
-        return when {
-            command == "arise" ||
-                command.contains("wake up") ->
-                "ACRUX is active and ready."
+            val time = SimpleDateFormat(
+                "HH:mm:ss",
+                Locale.getDefault()
+            ).format(Date())
 
-            command == "freeze" ->
-                "ACRUX is standing by."
+            val oldText = debugText.text.toString()
+            val newText = "$oldText\n$time $message"
 
-            command == "stop" ->
-                "Stopping the current response."
-
-            command.contains("hello") || command == "hi" ->
-                "Hello! I am ACRUX. How can I help you?"
-
-            command.contains("your name") ->
-                "My name is ACRUX."
-
-            command.contains("time") ->
-                "The current time is ${
-                    java.text.SimpleDateFormat(
-                        "hh:mm a",
-                        Locale.getDefault()
-                    ).format(java.util.Date())
-                }"
-
-            command.contains("date") ->
-                "Today's date is ${
-                    java.text.SimpleDateFormat(
-                        "dd MMMM yyyy",
-                        Locale.getDefault()
-                    ).format(java.util.Date())
-                }"
-
-            command.contains("status") ->
-                "ACRUX system is ready."
-
-            else -> null
+            debugText.text = newText
+                .lines()
+                .takeLast(35)
+                .joinToString("\n")
         }
-}
-    private fun askGroq(message: String): String {
-
-        val url = URL(GROQ_URL)
-        val connection =
-            url.openConnection() as HttpURLConnection
-
-        connection.requestMethod = "POST"
-        connection.connectTimeout = 20000
-        connection.readTimeout = 30000
-        connection.doOutput = true
-
-        connection.setRequestProperty(
-            "Content-Type",
-            "application/json"
-        )
-
-        connection.setRequestProperty(
-            "Authorization",
-            "Bearer $GROQ_API_KEY"
-        )
-
-        val messages = JSONArray()
-
-        messages.put(
-            JSONObject()
-                .put("role", "system")
-                .put(
-                    "content",
-                    "You are ACRUX, a helpful personal AI assistant. Reply clearly and naturally."
-                )
-        )
-
-        messages.put(
-            JSONObject()
-                .put("role", "user")
-                .put("content", message)
-        )
-
-        val requestBody = JSONObject()
-            .put("model", GROQ_MODEL)
-            .put("messages", messages)
-            .put("temperature", 0.7)
-            .put("max_tokens", 1024)
-
-        connection.outputStream.use { output ->
-            output.write(
-                requestBody.toString().toByteArray(Charsets.UTF_8)
-            )
-        }
-
-        val responseCode = connection.responseCode
-
-        val responseStream =
-            if (responseCode in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream
-            }
-
-        val responseText =
-            responseStream.bufferedReader().use {
-                it.readText()
-            }
-
-        connection.disconnect()
-
-        if (responseCode !in 200..299) {
-            throw Exception(
-                "HTTP $responseCode: $responseText"
-            )
-        }
-
-        val json = JSONObject(responseText)
-
-        return json
-            .getJSONArray("choices")
-            .getJSONObject(0)
-            .getJSONObject("message")
-            .getString("content")
-            .trim()
     }
 
     private fun showReply(message: String) {
-        addChatMessage("YOU", message, true)
-    }
 
-    private fun showResponse(message: String) {
-        addChatMessage("ACRUX", message, false)
+        runOnUiThread {
+            responseText.text = message
+            addChatMessage("ACRUX", message)
+        }
     }
 
     private fun addChatMessage(
         sender: String,
-        message: String,
-        isUser: Boolean
+        message: String
     ) {
-        val messageView = TextView(this).apply {
-            text = "$sender\n$message"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
 
-            background = roundedBackground(
-                if (isUser) {
-                    Color.rgb(35, 75, 125)
-                } else {
-                    Color.rgb(42, 48, 65)
-                },
-                14
-            )
+        val textView = TextView(this).apply {
+            text = "$sender: $message"
+            textSize = 14f
+            setTextColor(android.graphics.Color.WHITE)
+            setPadding(10, 10, 10, 10)
         }
 
-        val params = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
+        chatContainer.addView(textView)
 
-        params.bottomMargin = dp(10)
-        chatLayout.addView(messageView, params)
+        saveHistoryMessage(sender, message)
 
         scrollView.post {
             scrollView.fullScroll(View.FOCUS_DOWN)
         }
     }
+        private fun registerAcruxReceiver() {
 
-    private fun showHistory() {
-        val history = ChatHistory.load(this)
+        val filter = IntentFilter().apply {
+            addAction(AcruxBackgroundService.ACTION_WAKE_WORD)
+            addAction(AcruxBackgroundService.ACTION_COMMAND)
+            addAction(AcruxBackgroundService.ACTION_REPLY)
+            addAction(AcruxBackgroundService.ACTION_ERROR)
+            addAction(AcruxBackgroundService.ACTION_DEBUG)
+        }
 
-        Toast.makeText(
-            this,
-            history.toString(),
-            Toast.LENGTH_LONG
-        ).show()
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                acruxReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+
+            receiverRegistered = true
+
+        } catch (e: Exception) {
+            addDebug("Receiver registration failed: ${e.message}")
+        }
     }
 
-    private fun speak(message: String) {
-        if (ttsReady) {
-            textToSpeech?.speak(
-                message,
-                TextToSpeech.QUEUE_FLUSH,
-                null,
-                "ACRUX_SPEECH"
+    private fun checkPermissionsAndStart() {
+
+        val permissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO
+        )
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissions.add(
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        }
+
+        val missingPermissions = permissions.filter {
+            ContextCompat.checkSelfPermission(
+                this,
+                it
+            ) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isEmpty()) {
+            startBackgroundListening()
+        } else {
+            permissionLauncher.launch(
+                missingPermissions.toTypedArray()
             )
         }
     }
 
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            val languageResult =
-                textToSpeech?.setLanguage(Locale.US)
+    private fun startBackgroundListening() {
 
-            ttsReady =
-                languageResult != TextToSpeech.LANG_MISSING_DATA &&
-                languageResult != TextToSpeech.LANG_NOT_SUPPORTED
-        }
-    }
-
-    private fun checkMicrophonePermission() {
         if (
             ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
-            launchVoiceInput()
-        } else {
-            microphonePermissionLauncher.launch(
-                Manifest.permission.RECORD_AUDIO
+            showStatus("Microphone permission required")
+            return
+        }
+
+        try {
+            val serviceIntent = Intent(
+                this,
+                AcruxBackgroundService::class.java
+            ).apply {
+                action = AcruxBackgroundService.ACTION_START
+            }
+
+            ContextCompat.startForegroundService(
+                this,
+                serviceIntent
             )
+
+            isBackgroundRunning = true
+
+            showStatus("ACRUX is starting...")
+            addDebug("Starting background listening")
+
+        } catch (e: Exception) {
+            showStatus("Could not start ACRUX")
+            addDebug("Service start error: ${e.message}")
         }
     }
 
-    private fun launchVoiceInput() {
+    private fun stopBackgroundListening() {
+
+        try {
+            val serviceIntent = Intent(
+                this,
+                AcruxBackgroundService::class.java
+            )
+
+            stopService(serviceIntent)
+
+            isBackgroundRunning = false
+
+            showStatus("ACRUX stopped")
+            addDebug("Background listening stopped")
+
+        } catch (e: Exception) {
+            addDebug("Stop service error: ${e.message}")
+        }
+    }
+
+    private fun startVoiceInput() {
+
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(
+                this,
+                "Voice recognition is unavailable",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
         try {
             val intent = Intent(
                 RecognizerIntent.ACTION_RECOGNIZE_SPEECH
             ).apply {
+
                 putExtra(
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
@@ -660,152 +546,303 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 )
 
                 putExtra(
-                    RecognizerIntent.EXTRA_PROMPT,
-                    "Speak to ACRUX"
+                    RecognizerIntent.EXTRA_MAX_RESULTS,
+                    1
                 )
             }
 
             voiceLauncher.launch(intent)
 
         } catch (e: Exception) {
-            showToast("Voice input is not available")
+            addDebug("Voice input error: ${e.message}")
         }
     }
 
-    private fun startBackgroundService() {
+    private fun sendMessage(message: String) {
+
+        val cleanedMessage = message.trim()
+
+        if (cleanedMessage.isBlank()) return
+
+        inputField.setText("")
+
+        addChatMessage("YOU", cleanedMessage)
+        showStatus("ACRUX is thinking...")
 
         if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
+            AcruxConfig.GROQ_API_KEY.isBlank() ||
+            AcruxConfig.GROQ_API_KEY ==
+            "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
         ) {
-            microphonePermissionLauncher.launch(
-                Manifest.permission.RECORD_AUDIO
-            )
-            showToast(
-                "Allow microphone permission, then press START BACKGROUND LISTENING again."
-            )
+            val error =
+                "Groq API key is not configured. Add your key in AcruxConfig."
+
+            showReply(error)
+            showStatus("API key required")
             return
         }
 
-        try {
-            val intent = Intent(
-                this,
-                AcruxBackgroundService::class.java
-            ).apply {
-                action = ACTION_START
-            }
+        thread {
 
-            ContextCompat.startForegroundService(
-                this,
-                intent
-            )
+            var connection: HttpURLConnection? = null
 
-            statusText.text = "BACKGROUND LISTENING STARTED"
-            addDebugLine("START REQUEST SENT TO SERVICE")
-            showToast("ACRUX background service started")
+            try {
 
-        } catch (e: Exception) {
-            addDebugLine("START ERROR: ${e.message}")
-            showToast("Could not start service: ${e.message}")
-        }
-    }
+                connection = URL(
+                    AcruxConfig.GROQ_URL
+                ).openConnection() as HttpURLConnection
 
-    private fun stopBackgroundService() {
-        try {
-            val intent = Intent(
-                this,
-                AcruxBackgroundService::class.java
-            ).apply {
-                action = ACTION_STOP
-            }
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 20000
+                connection.readTimeout = 30000
+                connection.doOutput = true
 
-            startService(intent)
-
-            statusText.text = "BACKGROUND LISTENING STOPPED"
-            addDebugLine("STOP REQUEST SENT")
-            showToast("ACRUX background service stopped")
-
-        } catch (e: Exception) {
-            showToast("Could not stop service: ${e.message}")
-        }
-    }
-
-    private fun registerVoiceReceiver() {
-
-        val filter = IntentFilter().apply {
-            addAction(ACTION_WAKE_WORD)
-            addAction(ACTION_COMMAND)
-            addAction(ACTION_ERROR)
-            addAction(ACTION_DEBUG)
-        }
-
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(
-                voiceReceiver,
-                filter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(
-                voiceReceiver,
-                filter
-            )
-        }
-
-        receiverRegistered = true
-    }
-
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (
-                ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(
-                    Manifest.permission.POST_NOTIFICATIONS
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
                 )
+
+                connection.setRequestProperty(
+                    "Authorization",
+                    "Bearer ${AcruxConfig.GROQ_API_KEY}"
+                )
+
+                val messages = JSONArray().apply {
+
+                    put(
+                        JSONObject().apply {
+                            put("role", "system")
+                            put(
+                                "content",
+                                "You are ACRUX, a helpful personal AI assistant. " +
+                                    "Answer clearly, naturally and accurately."
+                            )
+                        }
+                    )
+
+                    put(
+                        JSONObject().apply {
+                            put("role", "user")
+                            put("content", cleanedMessage)
+                        }
+                    )
+                }
+
+                val requestBody = JSONObject().apply {
+                    put("model", AcruxConfig.GROQ_MODEL)
+                    put("messages", messages)
+                    put("temperature", 0.7)
+                    put("max_tokens", 700)
+                }
+
+                connection.outputStream.use { output ->
+                    output.write(
+                        requestBody.toString()
+                            .toByteArray(Charsets.UTF_8)
+                    )
+                }
+
+                val responseCode = connection.responseCode
+
+                val responseText = if (responseCode in 200..299) {
+
+                    connection.inputStream
+                        .bufferedReader()
+                        .use { it.readText() }
+
+                } else {
+
+                    connection.errorStream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        ?: "Unknown server error"
+                }
+
+                if (responseCode !in 200..299) {
+                    throw IllegalStateException(
+                        "Groq error $responseCode: $responseText"
+                    )
+                }
+
+                val reply = JSONObject(responseText)
+                    .optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+
+                if (reply.isBlank()) {
+                    throw IllegalStateException(
+                        "Empty response from Groq"
+                    )
+                }
+
+                runOnUiThread {
+                    showReply(reply)
+                    showStatus("ACRUX is ready")
+                }
+
+            } catch (e: Exception) {
+
+                runOnUiThread {
+
+                    showStatus("Connection error")
+
+                    showReply(
+                        "I could not connect to the assistant service. " +
+                            "Please check your internet connection."
+                    )
+
+                    addDebug(
+                        "Groq request failed: ${e.message}"
+                    )
+                }
+
+            } finally {
+                connection?.disconnect()
             }
         }
     }
 
-    private fun roundedBackground(
-        color: Int,
-        radius: Int
-    ): GradientDrawable {
-        return GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = dp(radius).toFloat()
+    private fun saveHistoryMessage(
+        sender: String,
+        message: String
+    ) {
+
+        try {
+
+            val preferences = getSharedPreferences(
+                "acrux_chat_history",
+                Context.MODE_PRIVATE
+            )
+
+            val history = preferences.getString(
+                "messages",
+                "[]"
+            ) ?: "[]"
+
+            val array = JSONArray(history)
+
+            val item = JSONObject().apply {
+                put("sender", sender)
+                put("message", message)
+                put("time", System.currentTimeMillis())
+            }
+
+            array.put(item)
+
+            preferences.edit()
+                .putString("messages", array.toString())
+                .apply()
+
+        } catch (e: Exception) {
+            addDebug("Could not save chat history")
         }
     }
 
-    private fun marginParams(
-        width: Int,
-        height: Int
-    ): LinearLayout.LayoutParams {
-        return LinearLayout.LayoutParams(
-            width,
-            height
-        ).apply {
-            bottomMargin = dp(8)
+    private fun loadSavedHistory() {
+
+        try {
+
+            val preferences = getSharedPreferences(
+                "acrux_chat_history",
+                Context.MODE_PRIVATE
+            )
+
+            val history = preferences.getString(
+                "messages",
+                "[]"
+            ) ?: "[]"
+
+            val array = JSONArray(history)
+
+            for (i in 0 until array.length()) {
+
+                val item = array.optJSONObject(i) ?: continue
+
+                val sender = item.optString("sender")
+                val message = item.optString("message")
+
+                if (sender.isNotBlank() && message.isNotBlank()) {
+
+                    val textView = TextView(this).apply {
+                        text = "$sender: $message"
+                        textSize = 14f
+                        setTextColor(
+                            android.graphics.Color.WHITE
+                        )
+                        setPadding(10, 10, 10, 10)
+                    }
+
+                    chatContainer.addView(textView)
+                }
+            }
+
+        } catch (e: Exception) {
+            addDebug("Could not load chat history")
         }
     }
 
-    private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density
-        ).toInt()
+    private fun showChatHistory() {
+
+        val preferences = getSharedPreferences(
+            "acrux_chat_history",
+            Context.MODE_PRIVATE
+        )
+
+        val history = preferences.getString(
+            "messages",
+            "[]"
+        ) ?: "[]"
+
+        val array = JSONArray(history)
+
+        val historyText = StringBuilder()
+
+        for (i in 0 until array.length()) {
+
+            val item = array.optJSONObject(i) ?: continue
+
+            val sender = item.optString("sender")
+            val message = item.optString("message")
+
+            historyText.append(sender)
+                .append(": ")
+                .append(message)
+                .append("\n\n")
+        }
+
+        val displayText = if (historyText.isEmpty()) {
+            "No chat history available."
+        } else {
+            historyText.toString()
+        }
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("ACRUX CHAT HISTORY")
+            .setMessage(displayText)
+            .setPositiveButton("CLOSE", null)
+            .show()
     }
 
-    private fun showToast(message: String) {
+    private fun clearChatHistory() {
+
+        getSharedPreferences(
+            "acrux_chat_history",
+            Context.MODE_PRIVATE
+        ).edit()
+            .clear()
+            .apply()
+
+        chatContainer.removeAllViews()
+
+        responseText.text = "Chat history cleared."
+
         Toast.makeText(
             this,
-            message,
-            Toast.LENGTH_LONG
+            "Chat history cleared",
+            Toast.LENGTH_SHORT
         ).show()
     }
 
@@ -813,16 +850,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         if (receiverRegistered) {
             try {
-                unregisterReceiver(voiceReceiver)
+                unregisterReceiver(acruxReceiver)
             } catch (_: Exception) {
             }
 
             receiverRegistered = false
         }
 
-        textToSpeech?.stop()
-        textToSpeech?.shutdown()
-        textToSpeech = null
+        mainHandler.removeCallbacksAndMessages(null)
 
         super.onDestroy()
     }
