@@ -220,13 +220,9 @@ class MainActivity : ComponentActivity() {
             setPadding(12, 12, 12, 12)
         }
 
-        scrollView.addView(
-            chatContainer,
-            ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT
-            )
-        )
+        
+scrollView.addView(chatContainer)
+
 
         debugText = TextView(this).apply {
             text = "VOICE DEBUG\nWaiting..."
