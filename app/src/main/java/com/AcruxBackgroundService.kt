@@ -578,7 +578,7 @@ class AcruxBackgroundService : Service(),
             }, 700)
         }
     }
-       private fun startCommandRecognition() {
+        private fun startCommandRecognition() {
         if (!isRunning || !isCapturingCommand) return
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -1014,4 +1014,4 @@ class AcruxBackgroundService : Service(),
         stopEverything()
         super.onDestroy()
     }
-     
+}
