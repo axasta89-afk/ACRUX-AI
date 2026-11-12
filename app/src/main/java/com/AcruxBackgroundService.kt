@@ -27,7 +27,7 @@ import java.util.Locale
 import java.util.UUID
 
 internal object AcruxConfig {
-    const val GROQ_API_KEY = "PASTE_YOUR_NEW_GROQ_API_KEY_HERE"
+    const val GROQ_API_KEY = "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"
     const val GROQ_URL =
         "https://api.groq.com/openai/v1/chat/completions"
     const val GROQ_MODEL = "openai/gpt-oss-120b"
@@ -384,39 +384,127 @@ class AcruxBackgroundService : Service() {
         }, 900)
     }
 
-    private fun checkWakeWord(text: String) {
-        val normalized = text
-            .lowercase(Locale.ROOT)
-            .replace(Regex("[^a-z0-9\\s]"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
 
-        val wakePattern =
-            Regex("\\b(?:hey\\s+)?(?:acrux|a\\s+crux)\\b")
+private fun checkWakeWord(text: String) {
 
-        val match = wakePattern.find(normalized)
+    val normalized = text
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[^a-z0-9\\s]"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 
-        if (match == null) {
-            restartRecognition(false)
-            return
+    val words = normalized.split(" ").filter { it.isNotBlank() }
+
+    var wakeStart = -1
+    var wakeCount = 0
+
+    for (i in words.indices) {
+
+        if (isAcruxMatch(words[i])) {
+            wakeStart = i
+            wakeCount = 1
+            break
         }
 
-        debug("ACRUX wake word detected")
+        if (i + 1 < words.size) {
 
-        sendBroadcast(
-            Intent(ACTION_WAKE_WORD).setPackage(packageName)
-        )
+            val combined = words[i] + words[i + 1]
 
-        val remainingText = normalized
-            .removeRange(match.range)
-            .trim()
+            if (isAcruxMatch(combined)) {
+                wakeStart = i
+                wakeCount = 2
+                break
+            }
 
-        if (remainingText.isNotBlank()) {
-            processVoiceCommand(remainingText)
-        } else {
-            startCommandListening()
+            if (
+                words[i] == "a" &&
+                (words[i + 1] == "rise" || words[i + 1] == "rice")
+            ) {
+                wakeStart = i
+                wakeCount = 2
+                break
+            }
+        }
+
+        if (
+            words[i] == "arise" ||
+            words[i] == "rice"
+        ) {
+            wakeStart = i
+            wakeCount = 1
+            break
         }
     }
+
+    if (wakeStart == -1) {
+        debug("Wake word not detected: $normalized")
+        restartRecognition(false)
+        return
+    }
+
+    debug("ACRUX activated!")
+
+    sendBroadcast(
+        Intent(ACTION_WAKE_WORD).setPackage(packageName)
+    )
+
+    val remainingText = words
+        .drop(wakeStart + wakeCount)
+        .joinToString(" ")
+        .trim()
+
+    if (remainingText.isNotBlank()) {
+        processVoiceCommand(remainingText)
+    } else {
+        debug("Waiting for your command...")
+        startCommandListening()
+    }
+}
+
+private fun isAcruxMatch(word: String): Boolean {
+
+    val aliases = setOf(
+        "acrux",
+        "acruk",
+        "acrox",
+        "acrus",
+        "accrux",
+        "acru"
+    )
+
+    if (word in aliases) return true
+
+    if (word.length !in 4..6) return false
+
+    return editDistance(word, "acrux") <= 1
+}
+
+private fun editDistance(a: String, b: String): Int {
+
+    val previous = IntArray(b.length + 1) { it }
+
+    for (i in 1..a.length) {
+        val current = IntArray(b.length + 1)
+        current[0] = i
+
+        for (j in 1..b.length) {
+            val cost =
+                if (a[i - 1] == b[j - 1]) 0 else 1
+
+            current[j] = minOf(
+                current[j - 1] + 1,
+                previous[j] + 1,
+                previous[j - 1] + cost
+            )
+        }
+
+        for (j in previous.indices) {
+            previous[j] = current[j]
+        }
+    }
+
+    return previous[b.length]
+}
 
     private fun processVoiceCommand(text: String) {
         if (!isRunning || isProcessingCommand) {
